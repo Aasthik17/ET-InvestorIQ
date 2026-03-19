@@ -1,4 +1,43 @@
+# Python
 **/__pycache__/
-**/node_modules/
+**/*.py[cod]
+**/*.egg-info/
 **/venv/
+**/.venv/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+dist/
+build/
+
+# Environment
 .env
+.env.local
+.env.*.local
+
+# Node / Frontend
+**/node_modules/
+**/dist/
+**/.vite/
+
+# Generated Videos
+generated_videos/
+backend/generated_videos/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Redis dump
+dump.rdb
