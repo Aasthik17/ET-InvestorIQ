@@ -2,13 +2,13 @@
  * useMarketData — React Query hooks for market data.
  */
 import { useQuery } from '@tanstack/react-query'
-import { marketAPI } from '../services/api'
+import { marketAPI, chartsAPI } from '../services/api'
 
 export function useMarketOverview() {
   return useQuery({
     queryKey: ['market', 'overview'],
     queryFn: marketAPI.overview,
-    refetchInterval: 60_000, // Refresh every 60 seconds
+    refetchInterval: 60_000,
     staleTime: 30_000,
   })
 }
@@ -39,7 +39,6 @@ export function useStockFundamentals(symbol) {
 }
 
 export function useStockOHLCV(symbol, period = '1y', interval = '1d') {
-  const { chartsAPI } = require('../services/api')
   return useQuery({
     queryKey: ['ohlcv', symbol, period, interval],
     queryFn: () => chartsAPI.ohlcv(symbol, period, interval),

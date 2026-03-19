@@ -63,7 +63,7 @@ body {
   }
 
   .btn-secondary {
-    @apply bg-card hover:bg-border border border-border-strong text-text-base font-medium
+    @apply bg-card hover:bg-border border border-[#30363D] text-text-base font-medium
            px-4 py-2 rounded-lg transition-all duration-200 flex items-center gap-2;
   }
 
@@ -92,8 +92,8 @@ body {
   .section-title { @apply text-lg font-bold text-text-base mb-3; }
 
   .input-dark {
-    @apply bg-card border border-border-strong rounded-lg px-3 py-2 text-text-base
-           placeholder-muted focus:outline-none focus:border-accent/60 transition-colors;
+    @apply bg-card border border-[#30363D] rounded-lg px-3 py-2 text-text-base
+           placeholder:text-muted focus:outline-none focus:border-accent/60 transition-colors;
   }
 
   /* Glassmorphism card */
