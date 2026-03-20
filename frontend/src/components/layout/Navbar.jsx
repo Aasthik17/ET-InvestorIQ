@@ -1,74 +1,120 @@
 /**
- * Navbar — Top navigation bar with market ticker and status.
+ * Navbar — 48px top bar with index ticker and market status.
+ * TradingView/Kite style: dense, informational, no decoration.
  */
-import { NavLink } from 'react-router-dom'
-import { Activity, Bell, RefreshCw } from 'lucide-react'
+import { Settings } from 'lucide-react'
+import Logo from './Logo'
 import { useMarketOverview } from '../../hooks/useMarketData'
 
-export default function Navbar() {
-  const { data: market, isLoading } = useMarketOverview()
+function isMarketOpen() {
+  const now = new Date()
+  // Convert to IST (UTC+5:30)
+  const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
+  const day = ist.getDay()   // 0 = Sun, 6 = Sat
+  const h = ist.getHours()
+  const m = ist.getMinutes()
+  const mins = h * 60 + m
+  if (day === 0 || day === 6) return false
+  return mins >= 555 && mins < 930  // 9:15 AM – 3:30 PM IST
+}
 
-  const nifty = market?.nifty50 || {}
-  const niftyUp = (nifty?.change_pct || 0) >= 0
+function IndexPill({ name, value, changePct }) {
+  const up = changePct >= 0
+  return (
+    <div className="index-pill">
+      <span className="text-xs" style={{ color: '#787B86', fontFamily: 'Inter' }}>{name}</span>
+      <span className="price" style={{ fontSize: '12px', color: '#D1D4DC' }}>
+        {typeof value === 'number' ? value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
+      </span>
+      {changePct !== undefined && (
+        <span className={`price text-xs ${up ? 'bull' : 'bear'}`}>
+          {up ? '+' : ''}{changePct.toFixed(2)}%
+        </span>
+      )}
+    </div>
+  )
+}
+
+export default function Navbar() {
+  const { data: market } = useMarketOverview()
+  const open = isMarketOpen()
+
+  const nifty   = market?.nifty50    || {}
+  const sensex  = market?.sensex     || {}
+  const bankNifty = market?.bank_nifty || {}
+  const vix       = market?.vix
 
   return (
-    <header className="h-14 bg-card border-b border-border flex items-center px-4 gap-4 z-10 flex-shrink-0">
-      {/* Logo */}
-      <div className="flex items-center gap-2 mr-4">
-        <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
-          <Activity size={16} className="text-white" />
-        </div>
-        <div className="hidden sm:block">
-          <div className="text-xs font-bold text-accent tracking-wider">ET</div>
-          <div className="text-xs text-muted leading-none">InvestorIQ</div>
-        </div>
+    <header style={{
+      height: '48px',
+      background: '#1E222D',
+      borderBottom: '1px solid #2A2E39',
+      display: 'flex',
+      alignItems: 'center',
+      flexShrink: 0,
+      zIndex: 20,
+    }}>
+      {/* Logo — left-aligned, 220px to align with sidebar */}
+      <div style={{ width: '220px', minWidth: '220px', padding: '0 16px', display: 'flex', alignItems: 'center' }}>
+        <Logo />
       </div>
 
-      {/* Market ticker */}
-      <div className="flex-1 overflow-hidden">
-        {!isLoading && market && (
-          <div className="flex items-center gap-6 text-sm">
-            <span className="flex items-center gap-1.5">
-              <span className="text-muted font-medium">NIFTY</span>
-              <span className="font-bold text-text-base">
-                {nifty?.level?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-              </span>
-              <span className={`text-xs font-semibold ${niftyUp ? 'text-bull' : 'text-bear'}`}>
-                {niftyUp ? '▲' : '▼'} {Math.abs(nifty?.change_pct || 0).toFixed(2)}%
-              </span>
-            </span>
-            <span className="hidden md:flex items-center gap-1.5">
-              <span className="text-muted font-medium">SENSEX</span>
-              <span className="font-bold text-text-base">
-                {(market?.sensex?.level || 73800).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-              </span>
-              <span className={`text-xs font-semibold ${(market?.sensex?.change_pct || 0) >= 0 ? 'text-bull' : 'text-bear'}`}>
-                {(market?.sensex?.change_pct || 0) >= 0 ? '▲' : '▼'} {Math.abs(market?.sensex?.change_pct || 0).toFixed(2)}%
-              </span>
-            </span>
-            <span className={`hidden lg:flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full font-bold
-              ${market?.sentiment === 'BULLISH' ? 'bg-bull/15 text-bull' : market?.sentiment === 'BEARISH' ? 'bg-bear/15 text-bear' : 'bg-muted/15 text-muted'}`}>
-              {market?.sentiment}
-            </span>
-          </div>
-        )}
-        {isLoading && (
-          <div className="flex gap-2 items-center text-muted text-xs">
-            <RefreshCw size={12} className="animate-spin" />
-            Loading market data...
-          </div>
-        )}
+      {/* Index ticker tape — center */}
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'stretch',
+        height: '100%',
+        borderLeft: '1px solid #2A2E39',
+        overflow: 'hidden',
+      }}>
+        <IndexPill
+          name="NIFTY 50"
+          value={nifty?.level}
+          changePct={nifty?.change_pct}
+        />
+        <IndexPill
+          name="SENSEX"
+          value={sensex?.level ?? 73847.15}
+          changePct={sensex?.change_pct ?? 0.28}
+        />
+        <IndexPill
+          name="BANK NIFTY"
+          value={bankNifty?.level ?? 48234.50}
+          changePct={bankNifty?.change_pct ?? -0.12}
+        />
+        <IndexPill
+          name="INDIA VIX"
+          value={vix ?? 13.45}
+          changePct={vix != null ? 0 : undefined}
+        />
       </div>
 
-      {/* Right side */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-1.5 text-xs text-muted">
-          <div className="w-2 h-2 rounded-full bg-bull animate-pulse" />
-          <span className="hidden sm:block">Live</span>
+      {/* Right — status + settings */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        padding: '0 16px',
+        borderLeft: '1px solid #2A2E39',
+        height: '100%',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div style={{
+            width: '8px', height: '8px', borderRadius: '50%',
+            background: open ? '#26A69A' : '#EF5350',
+            boxShadow: open ? '0 0 4px #26A69A' : 'none',
+          }} />
+          <span className="text-xs" style={{ color: '#787B86', whiteSpace: 'nowrap' }}>
+            NSE {open ? 'Open' : 'Closed'}
+          </span>
         </div>
-        <button className="relative p-2 rounded-lg hover:bg-border transition-colors" aria-label="Notifications">
-          <Bell size={16} className="text-muted" />
-          <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-bear" />
+        <div className="divider-v" />
+        <button
+          aria-label="Settings"
+          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', color: '#4C525E', lineHeight: 0 }}
+        >
+          <Settings size={15} />
         </button>
       </div>
     </header>

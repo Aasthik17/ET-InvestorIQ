@@ -1,69 +1,88 @@
 /**
- * Sidebar — Left navigation panel with module links.
+ * Sidebar — 220px left navigation, Kite/TradingView left-border convention.
+ * Active nav uses 2px left border in accent (not a pill background).
  */
 import { NavLink } from 'react-router-dom'
 import {
-  LayoutDashboard, Radar, BarChart2, MessageSquare, Video
+  LayoutDashboard, Radio, CandlestickChart, MessageSquare, Video,
 } from 'lucide-react'
+import Logo from './Logo'
 
 const NAV_ITEMS = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard', tooltip: 'Overview' },
-  { to: '/radar', icon: Radar, label: 'Radar', tooltip: 'Opportunity Radar' },
-  { to: '/charts', icon: BarChart2, label: 'Charts', tooltip: 'Chart Intelligence' },
-  { to: '/chat', icon: MessageSquare, label: 'Chat', tooltip: 'AI Market Chat' },
-  { to: '/video', icon: Video, label: 'Video', tooltip: 'Video Engine' },
+  { to: '/',       icon: LayoutDashboard,  label: 'Dashboard' },
+  { to: '/radar',  icon: Radio,             label: 'Radar' },
+  { to: '/charts', icon: CandlestickChart,  label: 'Charts' },
+  { to: '/chat',   icon: MessageSquare,     label: 'Chat' },
+  { to: '/video',  icon: Video,             label: 'Video' },
 ]
+
+function MarketStatusWidget() {
+  const now = new Date()
+  const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
+  const h = ist.getHours(), m = ist.getMinutes()
+  const day = ist.getDay()
+  const mins = h * 60 + m
+  const open = day >= 1 && day <= 5 && mins >= 555 && mins < 930
+
+  const istStr = ist.toLocaleTimeString('en-IN', {
+    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata',
+  })
+
+  // Next event
+  let nextEvent = ''
+  if (!open) {
+    nextEvent = day === 0 || day === 6 ? 'Opens Mon 9:15 AM' : mins < 555 ? 'Opens 9:15 AM' : 'Opens Mon 9:15 AM'
+  } else {
+    nextEvent = 'Closes 3:30 PM'
+  }
+
+  return (
+    <div style={{ padding: '12px', borderTop: '1px solid #2A2E39' }}>
+      <div className="label" style={{ marginBottom: '6px' }}>Market Status</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+        <div style={{
+          width: '6px', height: '6px', borderRadius: '50%',
+          background: open ? '#26A69A' : '#EF5350',
+        }} />
+        <span className="text-xs" style={{ color: open ? '#26A69A' : '#EF5350' }}>
+          NSE {open ? 'Open' : 'Closed'}
+        </span>
+      </div>
+      <div className="price text-xs" style={{ color: '#D1D4DC', marginBottom: '2px' }}>{istStr} IST</div>
+      <div className="text-xs" style={{ color: '#4C525E' }}>{nextEvent}</div>
+    </div>
+  )
+}
 
 export default function Sidebar() {
   return (
-    <nav className="w-16 lg:w-56 bg-card border-r border-border flex flex-col flex-shrink-0 h-screen">
-      {/* Logo (mobile only — desktop shows in navbar) */}
-      <div className="h-14 flex items-center justify-center lg:hidden border-b border-border">
-        <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
-          <span className="text-white font-bold text-xs">ET</span>
-        </div>
-      </div>
-
-      {/* Brand (desktop) */}
-      <div className="hidden lg:flex items-center gap-3 px-4 h-14 border-b border-border">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-accent-light flex items-center justify-center">
-          <span className="text-white font-bold text-sm">ET</span>
-        </div>
-        <div>
-          <div className="text-sm font-bold text-text-base leading-none">InvestorIQ</div>
-          <div className="text-xs text-muted">AI Market Intelligence</div>
-        </div>
-      </div>
-
-      {/* Navigation */}
-      <div className="flex-1 py-4 px-2 flex flex-col gap-1">
+    <nav style={{
+      width: '220px',
+      minWidth: '220px',
+      height: '100%',
+      background: '#1E222D',
+      borderRight: '1px solid #2A2E39',
+      display: 'flex',
+      flexDirection: 'column',
+      flexShrink: 0,
+    }}>
+      {/* Nav items */}
+      <div style={{ flex: 1, paddingTop: '8px' }}>
         {NAV_ITEMS.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}
             end={to === '/'}
-            title={label}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-150 group
-              ${isActive
-                ? 'bg-accent/15 text-accent border border-accent/30'
-                : 'text-muted hover:text-text-base hover:bg-border'
-              }`
-            }
+            className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
           >
-            <Icon size={18} className="flex-shrink-0" />
-            <span className="hidden lg:block text-sm font-medium">{label}</span>
+            <Icon size={15} style={{ flexShrink: 0 }} />
+            <span>{label}</span>
           </NavLink>
         ))}
       </div>
 
-      {/* Footer */}
-      <div className="p-3 border-t border-border">
-        <div className="hidden lg:block text-xs text-muted text-center">
-          <div className="font-semibold text-text-base">ET InvestorIQ</div>
-          <div className="text-muted mt-0.5">Gen AI Hackathon 2026</div>
-        </div>
-      </div>
+      {/* Market status widget at bottom */}
+      <MarketStatusWidget />
     </nav>
   )
 }

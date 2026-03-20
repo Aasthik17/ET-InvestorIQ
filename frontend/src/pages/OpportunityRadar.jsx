@@ -1,292 +1,230 @@
 /**
- * OpportunityRadar — Signal discovery and insider intelligence page.
+ * OpportunityRadar — Bloomberg-style signal terminal.
+ * Left: filter panel. Right: row-based signal feed with accordion expand.
  */
-import { useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { RefreshCw, Filter, X, TrendingUp, TrendingDown, Users, Activity } from 'lucide-react'
-import { useSignals, useRefreshSignals, useInsiderTrades, useFiiDii, useRadarSummary } from '../hooks/useSignals'
-import SignalCard from '../components/common/SignalCard'
+import { useState, useMemo } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { RefreshCw, SlidersHorizontal } from 'lucide-react'
+import { radarAPI } from '../services/api'
+import SignalRow from '../components/common/SignalRow'
 import LoadingSpinner from '../components/common/LoadingSpinner'
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-  LineChart, Line, CartesianGrid, Legend
-} from 'recharts'
 
-const FILTER_OPTIONS = ['All', 'BULLISH', 'BEARISH', 'NEUTRAL']
-const TYPE_FILTERS = ['All', 'INSIDER_TRADE', 'BULK_DEAL', 'FILING', 'FII_ACCUMULATION', 'CORPORATE_ACTION']
+const SIGNAL_TYPES = [
+  { key: 'INSIDER_TRADE',    label: 'Insider Trade',     color: '#F59E0B' },
+  { key: 'BULK_DEAL',        label: 'Bulk Deal',         color: '#787B86' },
+  { key: 'FII_ACCUMULATION', label: 'FII / DII Flow',    color: '#10B981' },
+  { key: 'FILING',           label: 'Corporate Filing',  color: '#8B5CF6' },
+  { key: 'TECHNICAL',        label: 'Technical Signal',  color: '#06B6D4' },
+]
 
-function SignalDetailModal({ signal, onClose }) {
-  if (!signal) return null
-  const isBull = signal.expected_impact === 'BULLISH'
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ scale: 0.95, y: 20 }}
-        animate={{ scale: 1, y: 0 }}
-        exit={{ scale: 0.95, y: 20 }}
-        className="card max-w-2xl w-full max-h-[85vh] overflow-y-auto"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xl font-bold text-text-base">{signal.symbol}</span>
-              <span className={`badge ${isBull ? 'badge-bull' : 'badge-bear'}`}>{signal.expected_impact}</span>
-            </div>
-            <p className="text-muted text-sm">{signal.signal_date}</p>
-          </div>
-          <button onClick={onClose} className="p-2 rounded-lg hover:bg-border transition-colors">
-            <X size={18} className="text-muted" />
-          </button>
-        </div>
-
-        <h3 className="text-base font-semibold text-text-base mb-3 leading-snug">{signal.headline}</h3>
-        <p className="text-sm text-muted mb-4 leading-relaxed">{signal.detail}</p>
-
-        {signal.ai_analysis && (
-          <div className={`p-4 rounded-xl mb-4 ${isBull ? 'bg-bull/8 border border-bull/20' : 'bg-bear/8 border border-bear/20'}`}>
-            <div className="text-xs font-bold text-muted uppercase tracking-wider mb-2">🤖 AI Analysis</div>
-            <p className="text-sm text-text-base leading-relaxed">{signal.ai_analysis}</p>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div className="card-hover p-3">
-            <div className="text-muted text-xs mb-1">Confidence</div>
-            <div className="text-xl font-bold text-text-base">{Math.round((signal.confidence_score || 0) * 100)}%</div>
-          </div>
-          <div className="card-hover p-3">
-            <div className="text-muted text-xs mb-1">Price at Signal</div>
-            <div className="text-xl font-bold text-text-base">₹{(signal.stock_price_at_signal || 0).toLocaleString('en-IN')}</div>
-          </div>
-        </div>
-
-        {signal.tags && (
-          <div className="flex flex-wrap gap-1.5 mt-4">
-            {signal.tags.map(tag => (
-              <span key={tag} className="badge badge-neutral">{tag}</span>
-            ))}
-          </div>
-        )}
-      </motion.div>
-    </motion.div>
-  )
-}
+const FEED_COLS = ['SYMBOL', 'TYPE', 'SIGNAL', 'CONFIDENCE', 'TIME', '']
 
 export default function OpportunityRadar() {
-  const [direction, setDirection] = useState('All')
-  const [signalType, setSignalType] = useState('All')
-  const [selected, setSelected] = useState(null)
-  const [activeTab, setActiveTab] = useState('signals')
+  const qc = useQueryClient()
+  const [direction, setDirection] = useState('ALL')
+  const [minConf, setMinConf] = useState(0)
+  const [enabledTypes, setEnabledTypes] = useState(new Set(SIGNAL_TYPES.map(t => t.key)))
 
-  const filters = {
-    direction: direction !== 'All' ? direction : undefined,
-    signal_types: signalType !== 'All' ? signalType : undefined,
+  const { data: raw, isFetching, dataUpdatedAt } = useQuery({
+    queryKey: ['radar', 'signals'],
+    queryFn: () => radarAPI.signals({ limit: 50 }),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  })
+
+  const refreshMutation = useMutation({
+    mutationFn: radarAPI.refresh,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['radar', 'signals'] }),
+  })
+
+  const signals = useMemo(() => {
+    const all = Array.isArray(raw) ? raw : raw?.signals || []
+    return all.filter(s => {
+      const dir = (s.direction || '').toUpperCase()
+      if (direction === 'BULLISH' && !['BULLISH', 'BUY'].includes(dir)) return false
+      if (direction === 'BEARISH' && !['BEARISH', 'SELL'].includes(dir)) return false
+      if (!enabledTypes.has(s.signal_type)) return false
+      if ((s.confidence_score ?? 0) * 100 < minConf) return false
+      return true
+    })
+  }, [raw, direction, minConf, enabledTypes])
+
+  const bullCount    = signals.filter(s => ['BULLISH','BUY'].includes((s.direction||'').toUpperCase())).length
+  const bearCount    = signals.filter(s => ['BEARISH','SELL'].includes((s.direction||'').toUpperCase())).length
+  const neutralCount = signals.length - bullCount - bearCount
+
+  const lastUpdate = dataUpdatedAt
+    ? (() => { const s = Math.round((Date.now() - dataUpdatedAt) / 1000); return s < 60 ? 'Just now' : `${Math.round(s/60)}m ago` })()
+    : '—'
+
+  const toggleType = key => {
+    setEnabledTypes(prev => {
+      const n = new Set(prev)
+      n.has(key) ? n.delete(key) : n.add(key)
+      return n
+    })
   }
 
-  const { data: signalData, isLoading } = useSignals(filters)
-  const { data: summary } = useRadarSummary()
-  const { data: fiiData } = useFiiDii(30)
-  const refreshMutation = useRefreshSignals()
-
-  const signals = signalData?.signals || []
-  const bullish = signals.filter(s => s.expected_impact === 'BULLISH').length
-  const bearish = signals.filter(s => s.expected_impact === 'BEARISH').length
-
-  // FII chart
-  const fiiChart = Array.isArray(fiiData) ? fiiData.slice(-14).map(d => ({
-    date: d.date?.slice(5),
-    FII: parseFloat(d.fii_net || 0),
-    DII: parseFloat(d.dii_net || 0),
-  })) : []
-
   return (
-    <div className="p-4 lg:p-6 space-y-5 animate-fade-in">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-text-base">Opportunity Radar</h1>
-          <p className="text-muted text-sm mt-0.5">
-            {signals.length} signals · {bullish} bullish · {bearish} bearish
-          </p>
-        </div>
-        <button
-          onClick={() => refreshMutation.mutate()}
-          disabled={refreshMutation.isPending}
-          className="btn-primary text-sm"
-        >
-          <RefreshCw size={14} className={refreshMutation.isPending ? 'animate-spin' : ''} />
-          {refreshMutation.isPending ? 'Scanning...' : 'Refresh'}
-        </button>
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
 
-      {/* Summary stats */}
-      {summary && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="card">
-            <div className="stat-label mb-1">Insider Buys</div>
-            <div className="text-2xl font-bold text-bull">{summary.total_buys}</div>
+      {/* ── Stats bar ──────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        height: '44px',
+        background: '#1E222D',
+        borderBottom: '1px solid #2A2E39',
+        padding: '0 16px',
+        gap: '24px',
+        flexShrink: 0,
+      }}>
+        {[
+          { label: 'Signals Scanned', val: (Array.isArray(raw) ? raw.length : raw?.total || 0) + ' scanned' },
+          { label: 'Actionable Today', val: `${signals.length} signals` },
+          { label: 'Direction',        val: <><span className="bull">{bullCount} Bull</span> · <span className="bear">{bearCount} Bear</span> · <span style={{color:'#787B86'}}>{neutralCount} Neutral</span></> },
+          { label: 'Updated',          val: lastUpdate },
+        ].map(({ label, val }, i) => (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '1px', borderRight: i < 3 ? '1px solid #2A2E39' : 'none', paddingRight: i < 3 ? '24px' : 0 }}>
+            <span className="label">{label}</span>
+            {typeof val === 'string' || typeof val === 'number'
+              ? <span className="price text-xs" style={{ color: '#D1D4DC' }}>{val}</span>
+              : <span className="text-xs" style={{ color: '#D1D4DC' }}>{val}</span>
+            }
           </div>
-          <div className="card">
-            <div className="stat-label mb-1">Insider Sells</div>
-            <div className="text-2xl font-bold text-bear">{summary.total_sells}</div>
-          </div>
-          <div className="card">
-            <div className="stat-label mb-1">Buy Value</div>
-            <div className="text-xl font-bold text-bull">₹{(summary.total_buy_value_cr || 0).toFixed(0)} Cr</div>
-          </div>
-          <div className="card">
-            <div className="stat-label mb-1">Net Sentiment</div>
-            <div className={`text-xl font-bold ${summary.net_sentiment === 'BULLISH' ? 'text-bull' : summary.net_sentiment === 'BEARISH' ? 'text-bear' : 'text-muted'}`}>
-              {summary.net_sentiment}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="flex gap-2 border-b border-border pb-0">
-        {[['signals', 'Signals'], ['fii', 'FII/DII Flow'], ['insider', 'Insiders']].map(([tab, label]) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px
-              ${activeTab === tab ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-text-base'}`}
-          >
-            {label}
-          </button>
         ))}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+          <button
+            className="btn-secondary"
+            onClick={() => refreshMutation.mutate()}
+            disabled={refreshMutation.isPending || isFetching}
+          >
+            <RefreshCw size={12} style={{ animation: (refreshMutation.isPending || isFetching) ? 'spin 0.8s linear infinite' : 'none' }} />
+            Refresh
+          </button>
+        </div>
       </div>
 
-      {/* Signals Tab */}
-      {activeTab === 'signals' && (
-        <>
-          {/* Filters */}
-          <div className="flex flex-wrap gap-2">
-            <Filter size={14} className="text-muted self-center" />
-            <div className="flex gap-1.5 flex-wrap">
-              {FILTER_OPTIONS.map(f => (
+      {/* ── Main: filter panel + feed ─────────────────────────────────── */}
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+        {/* Filter panel — 264px */}
+        <div style={{
+          width: '264px', minWidth: '264px',
+          background: '#1E222D',
+          borderRight: '1px solid #2A2E39',
+          overflow: 'auto',
+          flexShrink: 0,
+        }}>
+          <div style={{ padding: '12px' }}>
+
+            {/* Signal Type */}
+            <div className="label" style={{ marginBottom: '8px' }}>Signal Type</div>
+            {SIGNAL_TYPES.map(t => (
+              <label key={t.key} style={{
+                display: 'flex', alignItems: 'center', gap: '8px',
+                height: '28px', cursor: 'pointer',
+              }}>
+                <input
+                  type="checkbox"
+                  checked={enabledTypes.has(t.key)}
+                  onChange={() => toggleType(t.key)}
+                  style={{ accentColor: '#2962FF', width: '13px', height: '13px' }}
+                />
+                <span className="text-xs" style={{ color: enabledTypes.has(t.key) ? '#D1D4DC' : '#787B86' }}>
+                  {t.label}
+                </span>
+              </label>
+            ))}
+
+            <div className="divider-h" style={{ margin: '12px 0' }} />
+
+            {/* Direction */}
+            <div className="label" style={{ marginBottom: '8px' }}>Direction</div>
+            <div className="toggle-group">
+              {['ALL', 'BULLISH', 'BEARISH'].map(d => (
                 <button
-                  key={f}
-                  onClick={() => setDirection(f)}
-                  className={`px-3 py-1 rounded-full text-xs font-semibold transition-colors
-                    ${direction === f
-                      ? f === 'BULLISH' ? 'bg-bull text-black' : f === 'BEARISH' ? 'bg-bear text-white' : 'bg-accent text-white'
-                      : 'bg-card border border-border text-muted hover:text-text-base'
-                    }`}
+                  key={d}
+                  className={`toggle-btn${direction === d ? ' active' : ''}`}
+                  onClick={() => setDirection(d)}
+                  style={{ fontSize: '11px' }}
                 >
-                  {f}
+                  {d === 'BULLISH' ? '▲ Bull' : d === 'BEARISH' ? '▼ Bear' : 'All'}
                 </button>
               ))}
             </div>
+
+            <div className="divider-h" style={{ margin: '12px 0' }} />
+
+            {/* Min confidence */}
+            <div className="label" style={{ marginBottom: '8px' }}>
+              Min Confidence <span className="price" style={{ color: '#D1D4DC', marginLeft: '4px' }}>≥ {minConf}%</span>
+            </div>
+            <input
+              type="range" min={0} max={90} step={5} value={minConf}
+              onChange={e => setMinConf(+e.target.value)}
+              style={{ width: '100%', accentColor: '#2962FF', margin: 0 }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span className="text-xs" style={{ color: '#4C525E' }}>0%</span>
+              <span className="text-xs" style={{ color: '#4C525E' }}>90%</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Signal feed — right panel */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* Feed header */}
+          <div style={{
+            display: 'flex',
+            height: '32px',
+            background: '#1E222D',
+            borderBottom: '1px solid #2A2E39',
+            alignItems: 'center',
+            padding: '0 12px',
+            flexShrink: 0,
+          }}>
+            {[
+              { label: 'SYMBOL', w: '80px' },
+              { label: 'TYPE',   w: '90px' },
+              { label: 'SIGNAL', flex: 1 },
+              { label: 'CONFIDENCE', w: '80px' },
+              { label: 'TIME',  w: '64px', right: true },
+              { label: '',      w: '24px' },
+            ].map((col, i) => (
+              <div
+                key={i}
+                className="label"
+                style={{
+                  width: col.w,
+                  flex: col.flex,
+                  textAlign: col.right ? 'right' : 'left',
+                  flexShrink: 0,
+                  paddingRight: col.flex ? '12px' : 0,
+                }}
+              >
+                {col.label}
+              </div>
+            ))}
           </div>
 
-          {/* Signal grid */}
-          {isLoading ? (
-            <div className="flex justify-center py-12">
-              <LoadingSpinner text="Scanning market signals..." />
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {signals.map((signal, i) => (
-                <SignalCard
-                  key={signal.id}
-                  signal={signal}
-                  index={i}
-                  onClick={() => setSelected(signal)}
-                />
-              ))}
-              {signals.length === 0 && (
-                <div className="col-span-3 text-center py-12 text-muted">No signals found for selected filters.</div>
-              )}
-            </div>
-          )}
-        </>
-      )}
-
-      {/* FII/DII Tab */}
-      {activeTab === 'fii' && (
-        <div className="card">
-          <div className="section-title">FII/DII Net Flow — Last 14 Trading Days (₹ Cr)</div>
-          {fiiChart.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={fiiChart}>
-                <CartesianGrid stroke="#21262D" strokeDasharray="3 3" />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8B949E' }} />
-                <YAxis tick={{ fontSize: 10, fill: '#8B949E' }} />
-                <Tooltip
-                  contentStyle={{ background: '#161B22', border: '1px solid #21262D', borderRadius: 8 }}
-                  formatter={(v) => [`₹${v.toFixed(0)} Cr`, '']}
-                />
-                <Legend />
-                <Bar dataKey="FII" fill="#00C896" radius={[3, 3, 0, 0]} />
-                <Bar dataKey="DII" fill="#0066FF" radius={[3, 3, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex justify-center py-12"><LoadingSpinner /></div>
-          )}
+          {/* Rows */}
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {isFetching && signals.length === 0 ? (
+              <div style={{ display: 'flex', justifyContent: 'center', padding: '32px' }}>
+                <LoadingSpinner size={18} text="Loading signals..." />
+              </div>
+            ) : signals.length === 0 ? (
+              <div style={{ padding: '32px 16px', textAlign: 'center' }}>
+                <SlidersHorizontal size={20} style={{ color: '#4C525E', margin: '0 auto 8px' }} />
+                <div className="text-xs" style={{ color: '#4C525E' }}>No signals match your filters</div>
+              </div>
+            ) : (
+              signals.map((s, i) => <SignalRow key={s.signal_id || i} signal={s} />)
+            )}
+          </div>
         </div>
-      )}
-
-      {/* Insider Tab */}
-      {activeTab === 'insider' && (
-        <InsiderTab />
-      )}
-
-      {/* Detail Modal */}
-      <AnimatePresence>
-        {selected && <SignalDetailModal signal={selected} onClose={() => setSelected(null)} />}
-      </AnimatePresence>
-    </div>
-  )
-}
-
-function InsiderTab() {
-  const { data: trades, isLoading } = useInsiderTrades()
-  if (isLoading) return <div className="flex justify-center py-12"><LoadingSpinner /></div>
-  const tradeList = Array.isArray(trades) ? trades : []
-  return (
-    <div className="card overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-border text-muted">
-            <th className="text-left pb-2 font-medium">Date</th>
-            <th className="text-left pb-2 font-medium">Symbol</th>
-            <th className="text-left pb-2 font-medium">Person</th>
-            <th className="text-left pb-2 font-medium">Category</th>
-            <th className="text-left pb-2 font-medium">Type</th>
-            <th className="text-right pb-2 font-medium">Value (₹ Cr)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tradeList.map((trade, i) => (
-            <tr key={i} className="border-b border-border/40 hover:bg-surface/50 transition-colors">
-              <td className="py-2 text-muted">{trade.date || trade.acq_from_date || '—'}</td>
-              <td className="py-2 font-semibold text-text-base">{trade.stock_name || trade.symbol || '—'}</td>
-              <td className="py-2 text-muted">{trade.person_name || '—'}</td>
-              <td className="py-2"><span className="badge badge-neutral">{trade.category || '—'}</span></td>
-              <td className="py-2">
-                <span className={`badge ${trade.trade_type === 'Buy' ? 'badge-bull' : 'badge-bear'}`}>
-                  {trade.trade_type || '—'}
-                </span>
-              </td>
-              <td className="py-2 text-right font-semibold">
-                {trade.value_cr ? `₹${parseFloat(trade.value_cr).toFixed(2)}` : '—'}
-              </td>
-            </tr>
-          ))}
-          {tradeList.length === 0 && (
-            <tr><td colSpan={6} className="py-8 text-center text-muted">No insider trades found.</td></tr>
-          )}
-        </tbody>
-      </table>
+      </div>
     </div>
   )
 }

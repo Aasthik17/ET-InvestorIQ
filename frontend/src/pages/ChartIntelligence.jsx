@@ -1,318 +1,356 @@
 /**
- * ChartIntelligence — Pattern detection and OHLCV charting page.
+ * ChartIntelligence — Full-width chart analysis tool.
+ * Candlestick chart with RSI + MACD sub-panels, pattern chips, drawer analysis.
+ * TradingView/Kite visual language.
  */
-import { useState } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { motion } from 'framer-motion'
-import { Search, TrendingUp, TrendingDown, BarChart2, Target } from 'lucide-react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, ReferenceLine
+  ReferenceLine, Cell,
 } from 'recharts'
+import { Search, ChevronDown } from 'lucide-react'
 import { chartsAPI } from '../services/api'
 import LoadingSpinner from '../components/common/LoadingSpinner'
 
-const NSE_SYMBOLS = [
-  'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
-  'KOTAKBANK.NS', 'BAJFINANCE.NS', 'SBIN.NS', 'HINDUNILVR.NS', 'ITC.NS',
-  'AXISBANK.NS', 'TITAN.NS', 'SUNPHARMA.NS', 'TATASTEEL.NS', 'MARUTI.NS',
-]
+const QUICK_STOCKS = ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS', 'ADANIENT.NS']
+const PERIODS = ['1W', '1M', '3M', '6M', '1Y']
 
-const DIRECTION_COLOR = { BULLISH: 'text-bull', BEARISH: 'text-bear', NEUTRAL: 'text-muted' }
-const DIRECTION_BADGE = { BULLISH: 'badge-bull', BEARISH: 'badge-bear', NEUTRAL: 'badge-neutral' }
+/* ── Custom candlestick bar ──────────────────────────────────────────── */
+const CandleBar = (props) => {
+  const { x, y, width, height, open, close, high, low, index } = props
+  if (open == null || close == null) return null
+  const isBull = close >= open
+  const fill = isBull ? '#26A69A' : '#EF5350'
+  const bodyH = Math.max(1, Math.abs(height))
+  const bodyY = isBull ? y : y + height
+  const wickX = x + width / 2
 
-function PatternBadge({ pattern }) {
-  const dir = pattern.direction || 'NEUTRAL'
-  const conf = Math.round(pattern.confidence * 100)
   return (
-    <div className={`card border ${dir === 'BULLISH' ? 'border-bull/30' : dir === 'BEARISH' ? 'border-bear/30' : 'border-border'} p-3`}>
-      <div className="flex items-start justify-between mb-1">
-        <span className="text-sm font-semibold text-text-base line-clamp-2 flex-1 mr-2">
-          {pattern.pattern_label || pattern.pattern_type}
-        </span>
-        <span className={`badge ${DIRECTION_BADGE[dir]} flex-shrink-0`}>{dir}</span>
-      </div>
-      <div className="flex items-center gap-3 mt-2">
-        <div>
-          <div className="text-xs text-muted">Confidence</div>
-          <div className={`font-bold text-sm ${DIRECTION_COLOR[dir]}`}>{conf}%</div>
-        </div>
-        {pattern.key_levels?.target && (
-          <div>
-            <div className="text-xs text-muted">Target</div>
-            <div className="font-bold text-sm text-text-base">₹{pattern.key_levels.target}</div>
-          </div>
-        )}
-        {pattern.key_levels?.stop_loss && (
-          <div>
-            <div className="text-xs text-muted">Stop Loss</div>
-            <div className="font-bold text-sm text-bear">₹{pattern.key_levels.stop_loss}</div>
-          </div>
-        )}
-      </div>
-      {pattern.backtest_stats?.win_rate && (
-        <div className="mt-2 pt-2 border-t border-border text-xs text-muted">
-          Win Rate: <span className="font-semibold text-text-base">{pattern.backtest_stats.win_rate}%</span>
-          &nbsp;·&nbsp;Avg Return: <span className="font-semibold text-bull">{pattern.backtest_stats.avg_return_pct}%</span>
-          &nbsp;·&nbsp;{pattern.backtest_stats.sample_size} trades
-        </div>
-      )}
+    <g key={index}>
+      {/* Wick */}
+      <line x1={wickX} y1={props.highY ?? y} x2={wickX} y2={props.lowY ?? y + bodyH} stroke="#787B86" strokeWidth={0.5} />
+      {/* Body */}
+      <rect x={x + 1} y={bodyY} width={Math.max(1, width - 2)} height={bodyH} fill={fill} rx={0} />
+    </g>
+  )
+}
+
+/* ── OHLCV tooltip ───────────────────────────────────────────────────── */
+function OHLCVTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null
+  const d = payload[0]?.payload || {}
+  return (
+    <div style={{
+      background: '#1E222D', border: '1px solid #2A2E39', borderRadius: '4px',
+      padding: '8px 12px', fontSize: '11px', fontFamily: "'JetBrains Mono', monospace",
+    }}>
+      <div style={{ color: '#787B86', marginBottom: '4px' }}>{label}</div>
+      {[['O', d.open], ['H', d.high], ['L', d.low], ['C', d.close]].map(([k, v]) => (
+        <div key={k} style={{ color: '#D1D4DC' }}>{k}: ₹{(v||0).toFixed(2)}</div>
+      ))}
+      {d.volume && <div style={{ color: '#4C525E', marginTop: '4px' }}>Vol: {(d.volume/1e5).toFixed(1)}L</div>}
     </div>
   )
 }
 
-function CandleChart({ data, levels }) {
-  if (!data || !data.data || data.data.length === 0) return null
-  const chartData = data.data.slice(-60).map(d => ({
-    date: d.date.slice(5),
-    close: d.close,
-    volume: d.volume,
-    price: d.close,
-  }))
-
+/* ── RSI tooltip ─────────────────────────────────────────────────────── */
+function RSITooltip({ active, payload }) {
+  if (!active || !payload?.length) return null
   return (
-    <div className="card">
-      <div className="flex items-center justify-between mb-3">
-        <div className="section-title mb-0">Price Chart (Last 60 Days)</div>
-        <div className="flex items-center gap-3 text-sm">
-          <span className="text-muted">Current: </span>
-          <span className="font-bold text-text-base">₹{data.current_price?.toLocaleString('en-IN')}</span>
-        </div>
-      </div>
-      <ResponsiveContainer width="100%" height={260}>
-        <ComposedChart data={chartData}>
-          <CartesianGrid stroke="#21262D" strokeDasharray="3 3" />
-          <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#8B949E' }} interval={9} />
-          <YAxis tick={{ fontSize: 9, fill: '#8B949E' }} domain={['auto', 'auto']} />
-          <Tooltip
-            contentStyle={{ background: '#161B22', border: '1px solid #21262D', borderRadius: 8, fontSize: 11 }}
-            formatter={(v) => [`₹${v.toFixed(2)}`, 'Price']}
-          />
-          {levels?.support_zones?.slice(0, 2).map((s, i) => (
-            <ReferenceLine key={`s${i}`} y={s} stroke="#00C896" strokeDasharray="4 4" strokeOpacity={0.5} />
-          ))}
-          {levels?.resistance_zones?.slice(0, 2).map((r, i) => (
-            <ReferenceLine key={`r${i}`} y={r} stroke="#FF4757" strokeDasharray="4 4" strokeOpacity={0.5} />
-          ))}
-          <Line type="monotone" dataKey="price" stroke="#0066FF" dot={false} strokeWidth={2} />
-        </ComposedChart>
-      </ResponsiveContainer>
-      <div className="flex gap-4 mt-2 text-xs text-muted">
-        <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5 bg-bull opacity-50" /> Support</span>
-        <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5 bg-bear opacity-50" /> Resistance</span>
-        <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5 bg-accent" /> Close</span>
-      </div>
-    </div>
-  )
-}
-
-function LevelsCard({ levels }) {
-  if (!levels) return null
-  return (
-    <div className="card">
-      <div className="section-title flex items-center gap-2">
-        <Target size={14} className="text-accent" /> Key Levels
-      </div>
-      <div className="grid grid-cols-2 gap-2 text-sm">
-        <div>
-          <div className="text-muted text-xs mb-1">52W High</div>
-          <div className="font-bold text-bear">₹{levels.week_52_high?.toLocaleString('en-IN')}</div>
-        </div>
-        <div>
-          <div className="text-muted text-xs mb-1">52W Low</div>
-          <div className="font-bold text-bull">₹{levels.week_52_low?.toLocaleString('en-IN')}</div>
-        </div>
-        <div>
-          <div className="text-muted text-xs mb-1">Pivot</div>
-          <div className="font-bold text-text-base">₹{levels.pivot_point?.toLocaleString('en-IN')}</div>
-        </div>
-        <div>
-          <div className="text-muted text-xs mb-1">Current</div>
-          <div className="font-bold text-accent">₹{levels.current_price?.toLocaleString('en-IN')}</div>
-        </div>
-      </div>
-      {levels.support_zones?.length > 0 && (
-        <div className="mt-3">
-          <div className="text-xs text-muted mb-1">Support Zones</div>
-          <div className="flex flex-wrap gap-1">
-            {levels.support_zones.map((s, i) => (
-              <span key={i} className="badge badge-bull">₹{s}</span>
-            ))}
-          </div>
-        </div>
-      )}
-      {levels.resistance_zones?.length > 0 && (
-        <div className="mt-2">
-          <div className="text-xs text-muted mb-1">Resistance Zones</div>
-          <div className="flex flex-wrap gap-1">
-            {levels.resistance_zones.map((r, i) => (
-              <span key={i} className="badge badge-bear">₹{r}</span>
-            ))}
-          </div>
-        </div>
-      )}
+    <div style={{
+      background: '#1E222D', border: '1px solid #2A2E39', borderRadius: '4px',
+      padding: '4px 8px', fontSize: '11px', fontFamily: "'JetBrains Mono', monospace", color: '#2962FF',
+    }}>
+      RSI: {(payload[0]?.value || 0).toFixed(1)}
     </div>
   )
 }
 
 export default function ChartIntelligence() {
   const [symbol, setSymbol] = useState('RELIANCE.NS')
-  const [inputSymbol, setInputSymbol] = useState('RELIANCE.NS')
-  const [period, setPeriod] = useState('1y')
+  const [searchInput, setSearchInput] = useState('')
+  const [period, setPeriod] = useState('3M')
+  const [activeChip, setActiveChip] = useState(null)
 
-  const { data: scanResult, isLoading: scanLoading } = useQuery({
+  const { data: ohlcv, isLoading: chartLoading } = useQuery({
+    queryKey: ['ohlcv', symbol, period],
+    queryFn: () => chartsAPI.ohlcv(symbol, period.toLowerCase(), '1d'),
+    staleTime: 5 * 60_000,
+    enabled: !!symbol,
+  })
+
+  const { data: scan } = useQuery({
     queryKey: ['chart-scan', symbol],
     queryFn: () => chartsAPI.scan(symbol),
-    staleTime: 15 * 60_000,
-  })
-
-  const { data: levels } = useQuery({
-    queryKey: ['chart-levels', symbol],
-    queryFn: () => chartsAPI.levels(symbol),
-    staleTime: 15 * 60_000,
-  })
-
-  const { data: ohlcv, isLoading: ohlcvLoading } = useQuery({
-    queryKey: ['chart-ohlcv', symbol, period],
-    queryFn: () => chartsAPI.ohlcv(symbol, period),
     staleTime: 5 * 60_000,
+    enabled: !!symbol,
   })
+
+  const { data: sr } = useQuery({
+    queryKey: ['sr', symbol],
+    queryFn: () => chartsAPI.supportResistance(symbol),
+    staleTime: 10 * 60_000,
+    enabled: !!symbol,
+  })
+
+  // Process OHLCV data for charts
+  const chartData = useMemo(() => {
+    const rows = ohlcv?.data || ohlcv || []
+    if (!Array.isArray(rows)) return []
+    return rows.map(r => ({
+      date: r.date ? new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : '',
+      open: r.open, high: r.high, low: r.low, close: r.close, volume: r.volume,
+      rsi: r.rsi,
+      macd: r.macd, macd_signal: r.macd_signal,
+      macd_hist: r.macd_histogram ?? ((r.macd || 0) - (r.macd_signal || 0)),
+    }))
+  }, [ohlcv])
+
+  const priceRange = useMemo(() => {
+    if (!chartData.length) return { min: 0, max: 100 }
+    const highs = chartData.map(d => d.high || 0)
+    const lows  = chartData.map(d => d.low  || Infinity)
+    const mn = Math.min(...lows)
+    const mx = Math.max(...highs)
+    const pad = (mx - mn) * 0.05
+    return { min: mn - pad, max: mx + pad }
+  }, [chartData])
+
+  const patterns = scan?.patterns || []
+  const latestRSI = chartData.length ? chartData[chartData.length - 1]?.rsi : null
+  const latestPrice = chartData.length ? chartData[chartData.length - 1]?.close : null
 
   const handleSearch = (e) => {
     e.preventDefault()
-    const sym = inputSymbol.trim().toUpperCase()
-    setSymbol(sym.includes('.') ? sym : sym + '.NS')
+    const sym = searchInput.trim().toUpperCase()
+    if (sym) { setSymbol(sym.includes('.') ? sym : sym + '.NS'); setSearchInput('') }
   }
 
-  const patterns = scanResult?.patterns || []
-  const bullPatterns = patterns.filter(p => p.direction === 'BULLISH').length
-  const bearPatterns = patterns.filter(p => p.direction === 'BEARISH').length
-
   return (
-    <div className="p-4 lg:p-6 space-y-5 animate-fade-in">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-text-base">Chart Intelligence</h1>
-        <p className="text-muted text-sm mt-0.5">AI-powered technical pattern detection</p>
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: '#131722' }}>
 
-      {/* Search + Quick select */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <form onSubmit={handleSearch} className="flex gap-2 flex-1">
-          <div className="relative flex-1">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-            <input
-              type="text"
-              value={inputSymbol}
-              onChange={e => setInputSymbol(e.target.value)}
-              placeholder="e.g. RELIANCE.NS"
-              className="input-dark w-full pl-9 text-sm"
-            />
-          </div>
-          <button type="submit" className="btn-primary">Analyze</button>
+      {/* ── Toolbar ────────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '12px',
+        height: '48px', padding: '0 16px',
+        background: '#1E222D', borderBottom: '1px solid #2A2E39', flexShrink: 0,
+      }}>
+        {/* Search */}
+        <form onSubmit={handleSearch} style={{ position: 'relative', width: '260px', flexShrink: 0 }}>
+          <Search size={13} style={{ position: 'absolute', left: '9px', top: '50%', transform: 'translateY(-50%)', color: '#4C525E' }} />
+          <input
+            className="input price"
+            placeholder="Search symbol... e.g. RELIANCE"
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            style={{ paddingLeft: '30px', fontSize: '12px' }}
+          />
         </form>
-        <div className="flex gap-1.5 flex-wrap">
-          {['1mo', '3mo', '6mo', '1y'].map(p => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors
-                ${period === p ? 'bg-accent text-white' : 'bg-card border border-border text-muted hover:text-text-base'}`}
-            >
+
+        {/* Quick select */}
+        <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+          {QUICK_STOCKS.map(s => {
+            const clean = s.replace('.NS', '')
+            const active = symbol === s
+            return (
+              <button key={s} onClick={() => setSymbol(s)} style={{
+                height: '26px', padding: '0 8px', fontSize: '11px',
+                background: active ? '#1E2B4D' : 'transparent',
+                color: active ? '#2962FF' : '#787B86',
+                border: active ? '1px solid #2962FF30' : '1px solid #2A2E39',
+                borderRadius: '3px', cursor: 'pointer',
+                fontFamily: "'JetBrains Mono', monospace",
+              }}>
+                {clean}
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="divider-v" />
+
+        {/* Timeframe buttons */}
+        <div className="toggle-group" style={{ flexShrink: 0 }}>
+          {PERIODS.map(p => (
+            <button key={p} className={`toggle-btn${period === p ? ' active' : ''}`}
+              onClick={() => setPeriod(p)} style={{ padding: '0 10px', fontSize: '11px' }}>
               {p}
             </button>
           ))}
         </div>
-      </div>
 
-      {/* Quick stock buttons */}
-      <div className="flex flex-wrap gap-1.5">
-        {NSE_SYMBOLS.slice(0, 10).map(sym => (
-          <button
-            key={sym}
-            onClick={() => { setSymbol(sym); setInputSymbol(sym) }}
-            className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors
-              ${symbol === sym ? 'bg-accent/20 text-accent border border-accent/40' : 'bg-card border border-border text-muted hover:text-text-base'}`}
-          >
-            {sym.replace('.NS', '')}
+        <div style={{ marginLeft: 'auto' }}>
+          <button className="btn-primary" style={{ height: '28px', fontSize: '12px' }}>
+            Scan Universe
           </button>
-        ))}
+        </div>
       </div>
 
-      {/* Loading state */}
-      {scanLoading && (
-        <div className="flex justify-center py-12">
-          <LoadingSpinner text={`Scanning ${symbol} for patterns...`} />
+      {/* ── Current stock header ──────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '20px',
+        padding: '8px 16px', background: '#131722', borderBottom: '1px solid #2A2E39', flexShrink: 0,
+      }}>
+        <span className="price" style={{ fontSize: '16px', fontWeight: 600, color: '#D1D4DC' }}>
+          {symbol.replace('.NS', '')}
+        </span>
+        {latestPrice && (
+          <span className="price" style={{ fontSize: '20px', color: '#D1D4DC' }}>
+            ₹{latestPrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+        )}
+        {latestRSI && (
+          <span className="text-xs" style={{ color: '#787B86' }}>
+            RSI <span className={`price ${latestRSI > 70 ? 'bear' : latestRSI < 30 ? 'bull' : ''}`}
+              style={{ color: latestRSI > 70 ? '#EF5350' : latestRSI < 30 ? '#26A69A' : '#D1D4DC' }}>
+              {latestRSI.toFixed(1)}
+            </span>
+          </span>
+        )}
+        {sr?.pivot && (
+          <span className="text-xs" style={{ color: '#787B86' }}>
+            Pivot <span className="price" style={{ color: '#D1D4DC' }}>₹{sr.pivot.toFixed(2)}</span>
+          </span>
+        )}
+        {sr?.resistance?.length > 0 && (
+          <span className="text-xs" style={{ color: '#787B86' }}>
+            R1 <span className="price bear">₹{sr.resistance[0].toFixed(2)}</span>
+          </span>
+        )}
+        {sr?.support?.length > 0 && (
+          <span className="text-xs" style={{ color: '#787B86' }}>
+            S1 <span className="price bull">₹{sr.support[0].toFixed(2)}</span>
+          </span>
+        )}
+      </div>
+
+      {/* ── Charts area ──────────────────────────────────────────────── */}
+      {chartLoading ? (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <LoadingSpinner size={20} text="Loading chart..." />
+        </div>
+      ) : (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+
+          {/* Main candlestick chart — 65% */}
+          <div style={{ flex: 65, minHeight: 0, borderBottom: '1px solid #2A2E39' }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={chartData} margin={{ top: 8, right: 60, bottom: 0, left: 0 }}>
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 10, fill: '#4C525E' }}
+                  tickLine={false}
+                  axisLine={false}
+                  interval={Math.max(1, Math.floor(chartData.length / 8))}
+                />
+                <YAxis
+                  domain={[priceRange.min, priceRange.max]}
+                  orientation="right"
+                  tick={{ fontSize: 10, fill: '#4C525E', fontFamily: "'JetBrains Mono', monospace" }}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={v => `₹${v >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(0)}`}
+                  width={56}
+                />
+                <Tooltip content={OHLCVTooltip} />
+                {/* Support */}
+                {sr?.support?.slice(0, 2).map((v, i) => (
+                  <ReferenceLine key={`s${i}`} y={v} stroke="#26A69A" strokeDasharray="4 4" strokeWidth={0.75}
+                    label={{ value: `S${i+1}`, position: 'right', fill: '#26A69A', fontSize: 9 }} />
+                ))}
+                {/* Resistance */}
+                {sr?.resistance?.slice(0, 2).map((v, i) => (
+                  <ReferenceLine key={`r${i}`} y={v} stroke="#EF5350" strokeDasharray="4 4" strokeWidth={0.75}
+                    label={{ value: `R${i+1}`, position: 'right', fill: '#EF5350', fontSize: 9 }} />
+                ))}
+                {/* Volume bars (bottom portion, faded) */}
+                <Bar dataKey="volume" yAxisId="vol" opacity={0.15} isAnimationActive={false}>
+                  {chartData.map((d, i) => (
+                    <Cell key={i} fill={d.close >= d.open ? '#26A69A' : '#EF5350'} />
+                  ))}
+                </Bar>
+                {/* Price line (fallback if no OHLCV) */}
+                <Line type="monotone" dataKey="close" dot={false} strokeWidth={1.5}
+                  stroke="#2962FF" isAnimationActive={false}
+                  hide={chartData.some(d => d.open != null)}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* RSI sub-chart — 17.5% */}
+          <div style={{ flex: 17, minHeight: 0, borderBottom: '1px solid #2A2E39', padding: '0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', height: '18px', padding: '0 8px' }}>
+              <span className="label">RSI (14)</span>
+            </div>
+            <div style={{ height: 'calc(100% - 18px)' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={chartData} margin={{ top: 0, right: 60, bottom: 0, left: 0 }}>
+                  <XAxis dataKey="date" hide />
+                  <YAxis domain={[0, 100]} orientation="right" tick={{ fontSize: 9, fill: '#4C525E' }} tickLine={false} axisLine={false} width={56} ticks={[30, 50, 70]} />
+                  <Tooltip content={RSITooltip} />
+                  <ReferenceLine y={70} stroke="#EF5350" strokeDasharray="4 4" strokeWidth={0.5} />
+                  <ReferenceLine y={30} stroke="#26A69A" strokeDasharray="4 4" strokeWidth={0.5} />
+                  <ReferenceLine y={50} stroke="#2A2E39" strokeWidth={0.5} />
+                  <Line type="monotone" dataKey="rsi" dot={false} strokeWidth={1.5} stroke="#2962FF" isAnimationActive={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* MACD sub-chart — 17.5% */}
+          <div style={{ flex: 18, minHeight: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', height: '18px', padding: '0 8px' }}>
+              <span className="label">MACD (12, 26, 9)</span>
+            </div>
+            <div style={{ height: 'calc(100% - 18px)' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={chartData} margin={{ top: 0, right: 60, bottom: 4, left: 0 }}>
+                  <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#4C525E' }} tickLine={false} axisLine={false} interval={Math.max(1, Math.floor(chartData.length / 8))} />
+                  <YAxis orientation="right" tick={{ fontSize: 9, fill: '#4C525E' }} tickLine={false} axisLine={false} width={56} />
+                  <Tooltip contentStyle={{ background: '#1E222D', border: '1px solid #2A2E39', fontSize: '11px' }} />
+                  <ReferenceLine y={0} stroke="#2A2E39" />
+                  <Bar dataKey="macd_hist" isAnimationActive={false} radius={[1,1,0,0]}>
+                    {chartData.map((d, i) => (
+                      <Cell key={i} fill={(d.macd_hist ?? 0) >= 0 ? '#26A69A' : '#EF5350'} />
+                    ))}
+                  </Bar>
+                  <Line type="monotone" dataKey="macd" dot={false} stroke="#2962FF" strokeWidth={1} isAnimationActive={false} connectNulls />
+                  <Line type="monotone" dataKey="macd_signal" dot={false} stroke="#F59E0B" strokeWidth={1} isAnimationActive={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Results */}
-      {!scanLoading && scanResult && (
-        <div className="space-y-5">
-          {/* Summary bar */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="card">
-              <div className="stat-label mb-1">Symbol</div>
-              <div className="text-xl font-bold text-text-base">{symbol.replace('.NS', '')}</div>
-            </div>
-            <div className="card">
-              <div className="stat-label mb-1">Price</div>
-              <div className="text-xl font-bold text-text-base">₹{scanResult.current_price?.toLocaleString('en-IN')}</div>
-              <div className={`text-sm font-semibold mt-0.5 ${scanResult.price_change_1d_pct >= 0 ? 'text-bull' : 'text-bear'}`}>
-                {scanResult.price_change_1d_pct >= 0 ? '+' : ''}{scanResult.price_change_1d_pct?.toFixed(2)}%
-              </div>
-            </div>
-            <div className="card">
-              <div className="stat-label mb-1">RSI</div>
-              <div className={`text-xl font-bold ${scanResult.rsi > 70 ? 'text-bear' : scanResult.rsi < 30 ? 'text-bull' : 'text-text-base'}`}>
-                {scanResult.rsi?.toFixed(1)}
-              </div>
-              <div className="text-xs text-muted mt-0.5">
-                {scanResult.rsi > 70 ? 'Overbought' : scanResult.rsi < 30 ? 'Oversold' : 'Neutral'}
-              </div>
-            </div>
-            <div className="card">
-              <div className="stat-label mb-1">Bias</div>
-              <div className={`text-xl font-bold ${DIRECTION_COLOR[scanResult.overall_bias] || 'text-muted'}`}>
-                {scanResult.overall_bias}
-              </div>
-              <div className="text-xs text-muted">{bullPatterns}▲ {bearPatterns}▼ patterns</div>
-            </div>
-          </div>
-
-          {/* Chart + Levels */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-2">
-              {ohlcvLoading ? <div className="card flex items-center justify-center h-64"><LoadingSpinner /></div>
-                : <CandleChart data={ohlcv} levels={levels} />}
-            </div>
-            <LevelsCard levels={levels} />
-          </div>
-
-          {/* Detected patterns */}
-          <div>
-            <h2 className="section-title">
-              Detected Patterns ({patterns.length})
-            </h2>
-            {patterns.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {patterns.map((p, i) => (
-                  <motion.div
-                    key={i}
-                    initial={{ opacity: 0, y: 16 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.05 }}
-                  >
-                    <PatternBadge pattern={p} />
-                  </motion.div>
-                ))}
-              </div>
-            ) : (
-              <div className="card text-center py-8 text-muted">
-                No patterns detected for {symbol} at this time.
-              </div>
-            )}
-          </div>
+      {/* ── Pattern chips row ─────────────────────────────────────────── */}
+      {patterns.length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '6px',
+          padding: '6px 16px', background: '#1E222D', borderTop: '1px solid #2A2E39',
+          overflow: 'auto', flexShrink: 0,
+        }}>
+          <span className="label" style={{ flexShrink: 0 }}>Patterns:</span>
+          {patterns.map((p, i) => {
+            const isBull = (p.direction || '').toUpperCase().includes('BULL')
+            const isActive = activeChip === i
+            return (
+              <button key={i} onClick={() => setActiveChip(isActive ? null : i)} style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                height: '22px', padding: '0 8px', flexShrink: 0,
+                background: isActive ? '#1E2B4D' : 'transparent',
+                border: isActive ? '1px solid #2962FF' : '1px solid #2A2E39',
+                borderRadius: '3px', cursor: 'pointer', fontSize: '11px',
+                color: isActive ? '#2962FF' : '#787B86',
+              }}>
+                <span className={isBull ? 'bull' : 'bear'}>{isBull ? '▲' : '▼'}</span>
+                {p.pattern_name?.replace(/_/g, ' ')}
+                {p.confidence && <span className="price" style={{ color: '#4C525E' }}>{Math.round(p.confidence * 100)}%</span>}
+              </button>
+            )
+          })}
         </div>
       )}
     </div>

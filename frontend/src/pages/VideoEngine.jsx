@@ -1,326 +1,323 @@
 /**
- * VideoEngine — AI market video generation page.
+ * VideoEngine — Content studio: config left, preview right.
+ * Terminal-style generation progress log.
  */
-import { useState, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { Video, Play, Loader2, Check, AlertCircle, RefreshCw } from 'lucide-react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { CheckCircle, Circle, ChevronDown, ChevronRight } from 'lucide-react'
 import { videoAPI } from '../services/api'
 import LoadingSpinner from '../components/common/LoadingSpinner'
+import Logo from '../components/layout/Logo'
 
-const STATUS_ICONS = {
-  QUEUED: Loader2,
-  PROCESSING: Loader2,
-  COMPLETE: Check,
-  FAILED: AlertCircle,
-}
-
-const STATUS_COLORS = {
-  QUEUED: 'text-muted',
-  PROCESSING: 'text-accent',
-  COMPLETE: 'text-bull',
-  FAILED: 'text-bear',
-}
-
-const PERIOD_OPTIONS = ['1W', '1M', '3M', '6M', '1Y']
-
-const NSE_SYMBOLS_LIST = [
-  'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
-  'BAJFINANCE.NS', 'SBIN.NS', 'ITC.NS', 'TATAMOTORS.NS', 'SUNPHARMA.NS',
+const VIDEO_TYPES = [
+  { type: 'MARKET_WRAP',      label: 'Market Wrap (Daily)',  desc: 'End-of-day summary with top movers' },
+  { type: 'SECTOR_ROTATION',  label: 'Sector Rotation',      desc: 'Sector performance heatmap + flow' },
+  { type: 'FII_DII_FLOW',     label: 'FII / DII Flow',       desc: 'Institutional money movement chart' },
+  { type: 'BAR_RACE',         label: 'Bar Race Chart',        desc: 'Animated stock performance race' },
+  { type: 'IPO_TRACKER',      label: 'IPO Tracker',          desc: 'Upcoming IPO pipeline overview' },
+  { type: 'STOCK_DEEP_DIVE',  label: 'Stock Deep Dive',       desc: 'Full fundamental + technical analysis' },
 ]
 
-function VideoTypeCard({ vtype, selected, onClick }) {
-  const isSelected = selected === vtype.video_type
+const DATE_RANGES = ['1W', '1M', '3M']
+const DURATIONS   = ['30s', '60s', '90s']
+
+const NSE_SYMBOLS = ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'BAJFINANCE', 'SBIN', 'ITC', 'TATAMOTORS', 'SUNPHARMA']
+
+function ProgressLog({ steps, activeIdx, progress }) {
   return (
-    <motion.div
-      whileHover={{ y: -2 }}
-      onClick={onClick}
-      className={`card cursor-pointer transition-all duration-200
-        ${isSelected ? 'border-accent/60 bg-accent/8 glow-accent' : 'hover:border-accent/30'}`}
-    >
-      <div className="text-2xl mb-2">{vtype.icon}</div>
-      <div className="text-sm font-bold text-text-base mb-1">{vtype.name}</div>
-      <div className="text-xs text-muted mb-2 leading-snug">{vtype.description}</div>
-      <div className="text-xs text-muted flex items-center gap-1">
-        <Video size={10} /> {vtype.estimated_duration}
+    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', lineHeight: '2' }}>
+      {steps.map((step, i) => {
+        const done    = i < activeIdx
+        const active  = i === activeIdx
+        const pending = i > activeIdx
+        return (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px',
+            color: done ? '#26A69A' : active ? '#D1D4DC' : '#4C525E' }}>
+            <span style={{ width: '16px', textAlign: 'center' }}>
+              {done ? '✓' : active ? '●' : '·'}
+            </span>
+            {step}
+            {active && (
+              <span style={{ marginLeft: '4px' }}>
+                {[0, 1, 2].map(j => (
+                  <span key={j} style={{
+                    display: 'inline-block', width: '4px', height: '4px', borderRadius: '50%',
+                    background: '#2962FF', marginRight: '3px',
+                    animation: `pulse 1.2s ease-in-out ${j * 0.2}s infinite`,
+                    verticalAlign: 'middle',
+                  }} />
+                ))}
+              </span>
+            )}
+          </div>
+        )
+      })}
+      {/* Progress bar */}
+      <div style={{ marginTop: '12px', height: '3px', background: '#2A2E39', borderRadius: '2px', overflow: 'hidden' }}>
+        <div style={{
+          height: '100%', background: '#2962FF', borderRadius: '2px',
+          width: `${progress}%`, transition: 'width 500ms ease',
+        }} />
       </div>
-    </motion.div>
-  )
-}
-
-function JobCard({ job, onSelect }) {
-  const StatusIcon = STATUS_ICONS[job.status] || Loader2
-  const isProcessing = job.status === 'PROCESSING' || job.status === 'QUEUED'
-
-  return (
-    <div className={`card ${job.status === 'COMPLETE' ? 'card-hover cursor-pointer' : ''}`} onClick={() => job.status === 'COMPLETE' && onSelect(job)}>
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <StatusIcon
-            size={16}
-            className={`${STATUS_COLORS[job.status]} ${isProcessing ? 'animate-spin' : ''}`}
-          />
-          <span className="text-sm font-semibold text-text-base">{job.video_type}</span>
-        </div>
-        <span className={`badge ${job.status === 'COMPLETE' ? 'badge-bull' : job.status === 'FAILED' ? 'badge-bear' : 'badge-neutral'}`}>
-          {job.status}
-        </span>
-      </div>
-
-      <div className="text-xs text-muted mb-2">Job: {job.job_id}</div>
-
-      {/* Progress bar (while processing) */}
-      {isProcessing && (
-        <div className="confidence-bar mb-2">
-          <motion.div
-            className="confidence-fill bg-accent"
-            initial={{ width: '5%' }}
-            animate={{ width: `${job.progress_pct || 20}%` }}
-            transition={{ duration: 1 }}
-          />
-        </div>
-      )}
-
-      {/* Narration snippet */}
-      {job.narration_script && (
-        <p className="text-xs text-muted italic line-clamp-2 mt-1">
-          "{job.narration_script.slice(0, 120)}..."
-        </p>
-      )}
-
-      {/* Complete action */}
-      {job.status === 'COMPLETE' && (
-        <div className="mt-2 flex items-center gap-1 text-xs text-accent font-medium">
-          <Play size={10} /> Click to view video
-        </div>
-      )}
-
-      {job.error_message && (
-        <div className="mt-2 text-xs text-bear">{job.error_message}</div>
-      )}
+      <style>{`@keyframes pulse { 0%,100%{opacity:0.2} 50%{opacity:1} }`}</style>
     </div>
   )
 }
 
-function VideoPlayer({ job }) {
-  const videoUrl = videoAPI.serveUrl(job.job_id)
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.97 }}
-      animate={{ opacity: 1, scale: 1 }}
-      className="card"
-    >
-      <div className="section-title">{job.video_type} — Generated Video</div>
-      <div className="bg-surface rounded-xl overflow-hidden aspect-video flex items-center justify-center">
-        <video
-          src={videoUrl}
-          controls
-          autoPlay
-          className="w-full h-full object-contain"
-        >
-          <source src={videoUrl} />
-          {/* Fallback image for GIF/PNG */}
-          <img src={videoUrl} alt="Generated market video" className="w-full h-full object-contain" />
-        </video>
-      </div>
-      {job.narration_script && (
-        <div className="mt-4 p-4 bg-surface rounded-xl border border-border">
-          <div className="text-xs font-bold text-muted uppercase tracking-wider mb-2">📜 AI Narration Script</div>
-          <p className="text-sm text-text-base leading-relaxed">{job.narration_script}</p>
-        </div>
-      )}
-    </motion.div>
-  )
-}
+const PROGRESS_STEPS = [
+  'Fetching NSE market data',
+  'Running AI signal analysis',
+  'Rendering chart frames',
+  'Generating narration script',
+  'Assembling video',
+]
 
 export default function VideoEngine() {
   const [selectedType, setSelectedType] = useState('MARKET_WRAP')
-  const [symbols, setSymbols] = useState(['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS'])
-  const [period, setPeriod] = useState('1M')
-  const [selectedJob, setSelectedJob] = useState(null)
-  const [pollingId, setPollingId] = useState(null)
+  const [dateRange, setDateRange]       = useState('1M')
+  const [duration, setDuration]         = useState('60s')
+  const [symbols, setSymbols]           = useState(['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK'])
+  const [scriptOpen, setScriptOpen]     = useState(false)
+  const [completedJob, setCompletedJob] = useState(null)
+  const [generatingJob, setGeneratingJob] = useState(null)
+  const [progressStep, setProgressStep] = useState(0)
 
   const qc = useQueryClient()
 
-  const { data: vtypes, isLoading: typesLoading } = useQuery({
-    queryKey: ['video-types'],
-    queryFn: videoAPI.types,
-    staleTime: Infinity,
-  })
-
-  const { data: jobs } = useQuery({
-    queryKey: ['video-jobs'],
-    queryFn: () => videoAPI.jobs(10),
-    refetchInterval: pollingId ? 3000 : false,
-    staleTime: 0,
-  })
-
-  const { data: pollingJob } = useQuery({
-    queryKey: ['video-job', pollingId],
-    queryFn: () => videoAPI.job(pollingId),
-    enabled: !!pollingId,
-    refetchInterval: (data) => {
+  // Poll generating job
+  useQuery({
+    queryKey: ['video-job', generatingJob],
+    queryFn: () => videoAPI.job(generatingJob),
+    enabled: !!generatingJob,
+    refetchInterval: data => {
       if (!data) return 2000
       if (data.status === 'COMPLETE' || data.status === 'FAILED') return false
       return 2000
     },
     onSuccess: (data) => {
-      if (data?.status === 'COMPLETE') {
-        setPollingId(null)
-        setSelectedJob(data)
+      if (!data) return
+      const step = Math.floor((data.progress_pct || 0) / 20)
+      setProgressStep(Math.min(step, PROGRESS_STEPS.length - 1))
+      if (data.status === 'COMPLETE') {
+        setCompletedJob(data)
+        setGeneratingJob(null)
         qc.invalidateQueries({ queryKey: ['video-jobs'] })
+      } else if (data.status === 'FAILED') {
+        setGeneratingJob(null)
       }
     },
+  })
+
+  const { data: vtypes } = useQuery({
+    queryKey: ['video-types'],
+    queryFn: videoAPI.types,
+    staleTime: Infinity,
   })
 
   const generateMutation = useMutation({
     mutationFn: videoAPI.generate,
     onSuccess: (data) => {
-      setPollingId(data.job_id)
-      qc.invalidateQueries({ queryKey: ['video-jobs'] })
+      setCompletedJob(null)
+      setProgressStep(0)
+      setGeneratingJob(data.job_id)
     },
   })
 
-  const handleGenerate = () => {
-    generateMutation.mutate({
-      video_type: selectedType,
-      symbols: symbols,
-      duration_seconds: 60,
-      date_range: period,
-    })
-  }
+  const typeInfo = VIDEO_TYPES.find(t => t.type === selectedType) || VIDEO_TYPES[0]
+  const isRace = selectedType === 'BAR_RACE'
+  const isGenerating = !!generatingJob
+  const progress = generatingJob ? (progressStep / PROGRESS_STEPS.length) * 100 : 0
 
-  const toggleSymbol = (sym) => {
-    setSymbols(prev =>
-      prev.includes(sym) ? prev.filter(s => s !== sym) : [...prev, sym].slice(0, 8)
-    )
+  const toggleSymbol = sym => {
+    setSymbols(prev => prev.includes(sym) ? prev.filter(s => s !== sym) : [...prev, sym].slice(0, 8))
   }
-
-  const types = Array.isArray(vtypes) ? vtypes : []
-  const jobList = Array.isArray(jobs) ? jobs : []
 
   return (
-    <div className="p-4 lg:p-6 space-y-6 animate-fade-in">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-text-base">AI Market Video Engine</h1>
-        <p className="text-muted text-sm mt-0.5">Generate narrated market analysis videos in seconds</p>
-      </div>
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
 
-      {/* Video type selector */}
-      <div>
-        <h2 className="section-title">Select Video Type</h2>
-        {typesLoading ? (
-          <div className="flex justify-center py-8"><LoadingSpinner /></div>
-        ) : (
-          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-            {types.map(vt => (
-              <VideoTypeCard
-                key={vt.video_type}
-                vtype={vt}
-                selected={selectedType}
-                onClick={() => setSelectedType(vt.video_type)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Options */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Symbol selection */}
-        <div className="card">
-          <div className="section-title text-sm">Stock Universe ({symbols.length} selected)</div>
-          <div className="flex flex-wrap gap-1.5">
-            {NSE_SYMBOLS_LIST.map(sym => (
-              <button
-                key={sym}
-                onClick={() => toggleSymbol(sym)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors
-                  ${symbols.includes(sym) ? 'bg-accent/20 text-accent border border-accent/40' : 'bg-surface border border-border text-muted hover:text-text-base'}`}
-              >
-                {sym.replace('.NS', '')}
-              </button>
-            ))}
-          </div>
+      {/* ── Left: Configuration ───────────────────────────────────────── */}
+      <div style={{
+        width: '360px', minWidth: '360px',
+        background: '#1E222D',
+        borderRight: '1px solid #2A2E39',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'auto',
+        flexShrink: 0,
+      }}>
+        <div className="panel-header">
+          <span className="label">Video Type</span>
         </div>
 
-        {/* Period + Generate */}
-        <div className="card">
-          <div className="section-title text-sm">Date Range</div>
-          <div className="flex gap-1.5 flex-wrap mb-4">
-            {PERIOD_OPTIONS.map(p => (
-              <button
-                key={p}
-                onClick={() => setPeriod(p)}
-                className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors
-                  ${period === p ? 'bg-accent text-white' : 'bg-surface border border-border text-muted hover:text-text-base'}`}
-              >
-                {p}
+        {/* Video type list — radio rows */}
+        {VIDEO_TYPES.map(vt => {
+          const active = selectedType === vt.type
+          return (
+            <div
+              key={vt.type}
+              onClick={() => setSelectedType(vt.type)}
+              style={{
+                display: 'flex', alignItems: 'flex-start', gap: '10px',
+                padding: '8px 12px', cursor: 'pointer',
+                borderLeft: `2px solid ${active ? '#2962FF' : 'transparent'}`,
+                background: active ? '#1E2B4D' : 'transparent',
+                borderBottom: '1px solid #1E222D',
+                transition: 'background 100ms',
+              }}
+            >
+              <div style={{
+                width: '14px', height: '14px', borderRadius: '50%', flexShrink: 0, marginTop: '2px',
+                border: `2px solid ${active ? '#2962FF' : '#4C525E'}`,
+                background: active ? '#2962FF' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                {active && <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#131722' }} />}
+              </div>
+              <div>
+                <div style={{ fontSize: '13px', color: active ? '#D1D4DC' : '#787B86', fontWeight: active ? 500 : 400 }}>
+                  {vt.label}
+                </div>
+                <div className="text-xs" style={{ color: '#4C525E' }}>{vt.desc}</div>
+              </div>
+            </div>
+          )
+        })}
+
+        <div className="divider-h" style={{ margin: '8px 0' }} />
+
+        {/* Options */}
+        <div style={{ padding: '0 12px 12px' }}>
+          <div className="label" style={{ marginBottom: '6px' }}>Date Range</div>
+          <div className="toggle-group" style={{ marginBottom: '12px' }}>
+            {DATE_RANGES.map(d => (
+              <button key={d} className={`toggle-btn${dateRange === d ? ' active' : ''}`}
+                onClick={() => setDateRange(d)} style={{ flex: 1, fontSize: '11px' }}>
+                {d}
               </button>
             ))}
           </div>
 
-          <button
-            onClick={handleGenerate}
-            disabled={generateMutation.isPending || !!pollingId}
-            className="btn-primary w-full justify-center disabled:opacity-50"
-          >
-            {generateMutation.isPending || pollingId ? (
-              <>
-                <Loader2 size={16} className="animate-spin" />
-                Generating...
-              </>
-            ) : (
-              <>
-                <Video size={16} />
-                Generate Video
-              </>
-            )}
-          </button>
+          <div className="label" style={{ marginBottom: '6px' }}>Duration</div>
+          <div className="toggle-group" style={{ marginBottom: '12px' }}>
+            {DURATIONS.map(d => (
+              <button key={d} className={`toggle-btn${duration === d ? ' active' : ''}`}
+                onClick={() => setDuration(d)} style={{ flex: 1, fontSize: '11px' }}>
+                {d}
+              </button>
+            ))}
+          </div>
 
-          {/* Active job progress */}
-          {pollingId && pollingJob && (
-            <div className="mt-3">
-              <div className="flex items-center justify-between text-xs text-muted mb-1">
-                <span>Processing…</span>
-                <span>{pollingJob.progress_pct || 0}%</span>
+          {isRace && (
+            <>
+              <div className="label" style={{ marginBottom: '6px' }}>Stocks to Race ({symbols.length}/8)</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '12px' }}>
+                {NSE_SYMBOLS.map(s => (
+                  <button key={s} onClick={() => toggleSymbol(s)} style={{
+                    height: '22px', padding: '0 7px', fontSize: '11px',
+                    fontFamily: "'JetBrains Mono', monospace",
+                    background: symbols.includes(s) ? '#1E2B4D' : 'transparent',
+                    color: symbols.includes(s) ? '#2962FF' : '#787B86',
+                    border: `1px solid ${symbols.includes(s) ? '#2962FF40' : '#2A2E39'}`,
+                    borderRadius: '3px', cursor: 'pointer',
+                  }}>
+                    {s}
+                  </button>
+                ))}
               </div>
-              <div className="confidence-bar">
-                <motion.div
-                  className="confidence-fill bg-accent"
-                  animate={{ width: `${pollingJob.progress_pct || 10}%` }}
-                  transition={{ duration: 0.5 }}
-                />
+            </>
+          )}
+
+          {/* Generate button — full-width, the ONE primary CTA */}
+          <button
+            className="btn-primary"
+            onClick={() => generateMutation.mutate({
+              video_type: selectedType,
+              symbols: symbols.map(s => s + '.NS'),
+              duration_seconds: parseInt(duration),
+              date_range: dateRange,
+            })}
+            disabled={isGenerating || generateMutation.isPending}
+            style={{ width: '100%', justifyContent: 'center', height: '36px', fontSize: '13px', borderRadius: '4px' }}
+          >
+            {(isGenerating || generateMutation.isPending) ? (
+              <><LoadingSpinner size={13} /> Generating...</>
+            ) : 'Generate Video'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Right: Preview ────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div className="panel-header">
+          <span className="label">Preview — {typeInfo.label}</span>
+        </div>
+
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+          {/* Idle state */}
+          {!isGenerating && !completedJob && (
+            <div style={{ textAlign: 'center' }}>
+              <Logo collapsed />
+              <div style={{ marginTop: '12px', fontSize: '13px', color: '#4C525E' }}>
+                Configure and generate your market video
               </div>
+              <div className="text-xs" style={{ color: '#4C525E', marginTop: '4px' }}>
+                {typeInfo.desc}
+              </div>
+            </div>
+          )}
+
+          {/* Generation in progress */}
+          {isGenerating && (
+            <div style={{ width: '360px' }}>
+              <div className="label" style={{ marginBottom: '12px' }}>Generating…</div>
+              <ProgressLog steps={PROGRESS_STEPS} activeIdx={progressStep} progress={progress} />
+            </div>
+          )}
+
+          {/* Complete */}
+          {completedJob?.status === 'COMPLETE' && !isGenerating && (
+            <div style={{ width: '100%', maxWidth: '720px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {/* Video player */}
+              <div style={{ background: '#0D1117', borderRadius: '4px', overflow: 'hidden', border: '1px solid #2A2E39' }}>
+                <video
+                  controls
+                  autoPlay
+                  style={{ width: '100%', display: 'block' }}
+                  src={`/videos/${completedJob.job_id}.mp4`}
+                >
+                  <img src={`/videos/${completedJob.job_id}.gif`} alt="Generated chart" style={{ width: '100%' }} />
+                </video>
+              </div>
+
+              {/* Narration script — collapsible */}
+              {completedJob.narration_script && (
+                <div style={{ border: '1px solid #2A2E39', borderRadius: '4px', overflow: 'hidden' }}>
+                  <button
+                    onClick={() => setScriptOpen(o => !o)}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      width: '100%', padding: '8px 12px', background: '#1E222D',
+                      border: 'none', cursor: 'pointer',
+                    }}
+                  >
+                    <span className="label">Narration Script</span>
+                    {scriptOpen ? <ChevronDown size={13} style={{ color: '#787B86' }} /> : <ChevronRight size={13} style={{ color: '#787B86' }} />}
+                  </button>
+                  {scriptOpen && (
+                    <div style={{ padding: '12px', background: '#131722', fontSize: '12px', color: '#787B86', lineHeight: '1.7' }}>
+                      {completedJob.narration_script}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <button className="btn-secondary" style={{ alignSelf: 'flex-start' }}>
+                Export Video
+              </button>
             </div>
           )}
         </div>
       </div>
-
-      {/* Video player */}
-      <AnimatePresence>
-        {selectedJob?.status === 'COMPLETE' && (
-          <VideoPlayer key={selectedJob.job_id} job={selectedJob} />
-        )}
-      </AnimatePresence>
-
-      {/* Job history */}
-      {jobList.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="section-title mb-0">Recent Jobs</h2>
-            <button onClick={() => qc.invalidateQueries({ queryKey: ['video-jobs'] })} className="text-xs text-muted hover:text-text-base flex items-center gap-1">
-              <RefreshCw size={11} /> Refresh
-            </button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {jobList.map(job => (
-              <JobCard key={job.job_id} job={job} onSelect={setSelectedJob} />
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

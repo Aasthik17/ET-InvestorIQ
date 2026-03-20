@@ -1,16 +1,14 @@
-/**
- * LoadingSpinner — Animated loading indicator.
- */
-import { RefreshCw } from 'lucide-react'
-
-export default function LoadingSpinner({ size = 'md', text = '' }) {
-  const sizes = { sm: 14, md: 20, lg: 32 }
-  const px = sizes[size] || 20
-
+/** LoadingSpinner — CSS border-based, no SVG paths. */
+export default function LoadingSpinner({ size = 16, text = '' }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3">
-      <RefreshCw size={px} className="text-accent animate-spin" />
-      {text && <p className="text-muted text-sm">{text}</p>}
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+      <div
+        className="spinner"
+        style={{ width: size, height: size, borderWidth: size > 20 ? 3 : 2 }}
+      />
+      {text && (
+        <span className="text-xs" style={{ color: '#4C525E' }}>{text}</span>
+      )}
     </div>
   )
 }

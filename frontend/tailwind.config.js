@@ -5,67 +5,106 @@ export default {
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
+    // Override defaults where needed
+    borderRadius: {
+      none: '0',
+      sm: '3px',
+      DEFAULT: '4px',
+      md: '6px',
+      full: '9999px',
+    },
     extend: {
       colors: {
-        // Indian market color scheme
-        bull: '#00C896',
-        bear: '#FF4757',
-        accent: '#0066FF',
-        'accent-light': '#4D94FF',
-        neutral: '#1A1A2E',
-        card: '#161B22',
-        border: '#21262D',
-        'border-strong': '#30363D',
-        surface: '#0D1117',
-        muted: '#8B949E',
-        'text-base': '#E6EDF3',
-        gold: '#FFD700',
-        neon: '#00FF88',
+        // ── Backgrounds ──────────────────────────────────────────────────
+        bg: {
+          primary:   '#131722',
+          secondary: '#1E222D',
+          tertiary:  '#2A2E39',
+          hover:     '#363A45',
+          input:     '#2A2E39',
+        },
+        // ── Borders ──────────────────────────────────────────────────────
+        border: {
+          DEFAULT: '#2A2E39',
+          strong:  '#363A45',
+          light:   '#1E222D',
+        },
+        // ── Text ─────────────────────────────────────────────────────────
+        text: {
+          primary:   '#D1D4DC',
+          secondary: '#787B86',
+          muted:     '#4C525E',
+          inverse:   '#131722',
+        },
+        // ── Semantic financial colors ─────────────────────────────────────
+        bull:    '#26A69A',
+        bear:    '#EF5350',
+        neutral: '#787B86',
+        // ── Interactive ───────────────────────────────────────────────────
+        accent: {
+          DEFAULT: '#2962FF',
+          hover:   '#1E53E5',
+          subtle:  '#1E2B4D',
+        },
+        // ── Signal type colors ────────────────────────────────────────────
+        signal: {
+          insider:   '#F59E0B',
+          filing:    '#8B5CF6',
+          technical: '#06B6D4',
+          fii:       '#10B981',
+          corporate: '#EC4899',
+        },
+        // ── Chart-specific ────────────────────────────────────────────────
+        chart: {
+          grid:      '#1E222D',
+          crosshair: '#363A45',
+        },
+        // ── Brand ─────────────────────────────────────────────────────────
+        et: '#F26522',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        mono: ['JetBrains Mono', 'Fira Code', 'Consolas', 'monospace'],
       },
-      backgroundImage: {
-        'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
-        'gradient-card': 'linear-gradient(135deg, #16213E 0%, #0F3460 100%)',
-        'gradient-bull': 'linear-gradient(135deg, #00C896 0%, #00FF88 100%)',
-        'gradient-bear': 'linear-gradient(135deg, #FF4757 0%, #FF6B81 100%)',
+      fontSize: {
+        '2xs':  ['10px', { lineHeight: '14px' }],
+        xs:     ['11px', { lineHeight: '16px' }],
+        sm:     ['12px', { lineHeight: '18px' }],
+        base:   ['13px', { lineHeight: '20px' }],
+        md:     ['14px', { lineHeight: '22px' }],
+        lg:     ['16px', { lineHeight: '24px' }],
+        xl:     ['18px', { lineHeight: '28px' }],
+        '2xl':  ['22px', { lineHeight: '32px' }],
+      },
+      spacing: {
+        '13': '52px',
+        '15': '60px',
+        '18': '72px',
+      },
+      boxShadow: {
+        none: 'none',
+        card: 'none',
       },
       animation: {
-        'fade-in': 'fadeIn 0.4s ease-out',
-        'slide-up': 'slideUp 0.3s ease-out',
-        'slide-in': 'slideIn 0.4s ease-out',
-        'glow-pulse': 'glowPulse 2s ease-in-out infinite',
-        'ticker': 'ticker 30s linear infinite',
+        spin: 'spin 0.8s linear infinite',
+        'fade-in': 'fadeIn 200ms ease-out',
+        'slide-down': 'slideDown 200ms ease-out',
+        'progress': 'progress 2s ease-in-out infinite',
       },
       keyframes: {
         fadeIn: {
-          '0%': { opacity: '0' },
+          '0%':   { opacity: '0' },
           '100%': { opacity: '1' },
         },
-        slideUp: {
-          '0%': { transform: 'translateY(20px)', opacity: '0' },
-          '100%': { transform: 'translateY(0)', opacity: '1' },
+        slideDown: {
+          '0%':   { opacity: '0', maxHeight: '0' },
+          '100%': { opacity: '1', maxHeight: '500px' },
         },
-        slideIn: {
-          '0%': { transform: 'translateX(-20px)', opacity: '0' },
-          '100%': { transform: 'translateX(0)', opacity: '1' },
+        progress: {
+          '0%':   { width: '0%' },
+          '50%':  { width: '70%' },
+          '100%': { width: '90%' },
         },
-        glowPulse: {
-          '0%, 100%': { boxShadow: '0 0 5px rgba(0, 200, 150, 0.3)' },
-          '50%': { boxShadow: '0 0 20px rgba(0, 200, 150, 0.7)' },
-        },
-        ticker: {
-          '0%': { transform: 'translateX(100%)' },
-          '100%': { transform: 'translateX(-100%)' },
-        },
-      },
-      boxShadow: {
-        'card': '0 4px 24px rgba(0, 0, 0, 0.4)',
-        'card-hover': '0 8px 32px rgba(0, 102, 255, 0.2)',
-        'bull': '0 0 16px rgba(0, 200, 150, 0.3)',
-        'bear': '0 0 16px rgba(255, 71, 87, 0.3)',
       },
     },
   },
