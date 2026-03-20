@@ -4,7 +4,7 @@
  */
 import { Settings } from 'lucide-react'
 import Logo from './Logo'
-import { useMarketOverview } from '../../hooks/useMarketData'
+import { useDashboardData } from '../../hooks/useMarketData'
 
 function isMarketOpen() {
   const now = new Date()
@@ -36,13 +36,13 @@ function IndexPill({ name, value, changePct }) {
 }
 
 export default function Navbar() {
-  const { data: market } = useMarketOverview()
-  const open = isMarketOpen()
+  const { indices: market, marketStatus } = useDashboardData()
+  const open = marketStatus?.is_open ?? isMarketOpen()
 
   const nifty   = market?.nifty50    || {}
   const sensex  = market?.sensex     || {}
-  const bankNifty = market?.bank_nifty || {}
-  const vix       = market?.vix
+  const bankNifty = market?.banknifty || {}
+  const vix       = market?.vix      || {}
 
   return (
     <header style={{

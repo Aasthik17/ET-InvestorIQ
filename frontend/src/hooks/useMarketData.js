@@ -13,7 +13,7 @@ export function useDashboardData() {
 
   const overview = useQuery({
     queryKey:        ['market_overview'],
-    queryFn:         () => api.get('/market/overview').then(r => r.data),
+    queryFn:         () => api.get('/market/overview'),
     staleTime:       60_000,
     refetchInterval: 300_000,  // every 5 minutes
     retry:           2,
@@ -60,7 +60,7 @@ export function useRadarData(filters = {}) {
 
   return useQuery({
     queryKey:        ['radar_signals', filters],
-    queryFn:         () => api.get(`/radar/signals${params ? '?' + params : ''}`).then(r => r.data),
+    queryFn:         () => api.get(`/radar/signals${params ? '?' + params : ''}`),
     staleTime:       120_000,
     refetchInterval: 300_000,
     refetchOnWindowFocus: false,
@@ -71,7 +71,7 @@ export function useRadarData(filters = {}) {
 export function useInsiderTrades() {
   return useQuery({
     queryKey:        ['insider_trades'],
-    queryFn:         () => api.get('/radar/insider').then(r => r.data),
+    queryFn:         () => api.get('/radar/insider'),
     staleTime:       300_000,
     refetchInterval: 600_000,
     retry:           2,
@@ -81,7 +81,7 @@ export function useInsiderTrades() {
 export function useBulkDeals() {
   return useQuery({
     queryKey:        ['bulk_deals'],
-    queryFn:         () => api.get('/radar/bulk-deals').then(r => r.data),
+    queryFn:         () => api.get('/radar/bulk-deals'),
     staleTime:       300_000,
     refetchInterval: 600_000,
     retry:           2,
@@ -91,7 +91,7 @@ export function useBulkDeals() {
 export function useFilings() {
   return useQuery({
     queryKey:        ['filings'],
-    queryFn:         () => api.get('/radar/filings').then(r => r.data),
+    queryFn:         () => api.get('/radar/filings'),
     staleTime:       300_000,
     refetchInterval: 900_000,
     retry:           2,
@@ -107,8 +107,7 @@ export function useStockChart(symbol, period = '1y', interval = '1d') {
   const ohlcvQuery = useQuery({
     queryKey:        ['ohlcv', symbol, period, interval],
     queryFn:         () =>
-      api.get(`/charts/ohlcv/${symbol}?period=${period}&interval=${interval}`)
-         .then(r => r.data),
+      api.get(`/charts/ohlcv/${symbol}?period=${period}&interval=${interval}`),
     enabled:          !!symbol,
     staleTime:        3_600_000,   // 1 hour
     keepPreviousData: true,
@@ -141,7 +140,7 @@ export function useStockChart(symbol, period = '1y', interval = '1d') {
 export function usePatternScan(symbol) {
   return useQuery({
     queryKey:    ['patterns', symbol],
-    queryFn:     () => api.get(`/charts/scan/${symbol}`).then(r => r.data),
+    queryFn:     () => api.get(`/charts/scan/${symbol}`),
     enabled:     !!symbol,
     staleTime:   1_800_000,
     retry:       2,
@@ -169,7 +168,7 @@ export function useMarketStatus() {
 export function useSectorPerformance() {
   return useQuery({
     queryKey:        ['sectors'],
-    queryFn:         () => api.get('/market/sectors').then(r => r.data),
+    queryFn:         () => api.get('/market/sectors'),
     staleTime:       3_600_000,
     refetchInterval: 3_600_000,
     retry:           1,

@@ -295,18 +295,18 @@ async def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> OH
     except Exception as e:
         logger.error(f"OHLCV fetch failed for {symbol}: {e}")
         # Return mock OHLCV
-        from app.services.data_service import _mock_ohlcv
+        from app.demo_data import _ohlcv_series
         days_map = {"1mo": 22, "3mo": 66, "6mo": 132, "1y": 252, "2y": 504, "5y": 1260}
-        mock_df = _mock_ohlcv(symbol, days_map.get(period, 252))
+        mock_data = _ohlcv_series(start_price=1000.0, days=days_map.get(period, 252))
         candles = []
-        for idx, row in mock_df.iterrows():
+        for row in mock_data:
             candles.append({
-                "date": idx.strftime("%Y-%m-%d"),
-                "open": round(float(row["Open"]), 2),
-                "high": round(float(row["High"]), 2),
-                "low": round(float(row["Low"]), 2),
-                "close": round(float(row["Close"]), 2),
-                "volume": int(row["Volume"]),
+                "date": row["date"],
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "volume": row["volume"],
             })
         return OHLCVData(
             symbol=symbol, period=period, interval=interval,
