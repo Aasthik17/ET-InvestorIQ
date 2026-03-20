@@ -1,749 +1,973 @@
 """
 ET InvestorIQ — Data Service
-The primary data fetching layer. All external data calls go through here.
-Every function has a realistic mock fallback for demo reliability.
-
-Set MOCK_MODE = True for pure offline operation.
+Central data access layer. All market data fetches go through here.
+Sources: NSE Unofficial API (nse_session.py), yfinance, BSE India API
+Important: cache_service.get/set are SYNCHRONOUS — do not await them.
 """
 
 import asyncio
-import random
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-import pandas as pd
-import numpy as np
-
-from app.config import settings
+import pytz
 
 logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MOCK MODE toggle — flip to True for offline demo
-# ─────────────────────────────────────────────────────────────────────────────
-MOCK_MODE: bool = settings.mock_mode
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Sentiment keywords for news scoring
-# ─────────────────────────────────────────────────────────────────────────────
-POSITIVE_KEYWORDS = [
-    "profit", "growth", "record", "beat", "upgrade", "buy", "positive",
-    "strong", "bullish", "expansion", "acquisition", "order", "win",
-    "outperform", "surge", "rally", "gain", "increase", "beat estimates",
-    "buyback", "bonus", "dividend", "deal", "partnership"
-]
-NEGATIVE_KEYWORDS = [
-    "loss", "decline", "miss", "downgrade", "sell", "negative",
-    "bearish", "slowdown", "quarterly loss", "fraud", "probe",
-    "underperform", "slump", "fall", "decrease", "miss estimates",
-    "penalty", "scam", "default", "impairment", "write-off"
-]
+IST = pytz.timezone("Asia/Kolkata")
 
 
-def _sentiment_score(text: str) -> str:
-    """Simple keyword-based sentiment scorer for news headlines."""
-    text_lower = text.lower()
-    pos = sum(1 for kw in POSITIVE_KEYWORDS if kw in text_lower)
-    neg = sum(1 for kw in NEGATIVE_KEYWORDS if kw in text_lower)
-    if pos > neg:
-        return "positive"
-    elif neg > pos:
-        return "negative"
-    return "neutral"
+def _get_settings():
+    from app.config import settings
+    return settings
+
+
+def _get_mock_mode():
+    return _get_settings().mock_mode
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MOCK DATA GENERATORS
+# MARKET STATUS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _mock_ohlcv(symbol: str, days: int = 365) -> pd.DataFrame:
-    """Generate realistic mock OHLCV data for an Indian stock."""
-    base_prices = {
-        "RELIANCE.NS": 2900, "TCS.NS": 4100, "HDFCBANK.NS": 1650,
-        "INFY.NS": 1780, "ICICIBANK.NS": 1180, "KOTAKBANK.NS": 1800,
-        "LT.NS": 3700, "AXISBANK.NS": 1150, "BHARTIARTL.NS": 1390,
-        "ITC.NS": 470, "SBIN.NS": 820, "HINDUNILVR.NS": 2650,
-        "BAJFINANCE.NS": 7200, "WIPRO.NS": 540, "ULTRACEMCO.NS": 10500,
-        "TITAN.NS": 3600, "NESTLEIND.NS": 24000, "MARUTI.NS": 12800,
-        "SUNPHARMA.NS": 1780, "TATAMOTORS.NS": 960,
-        "^NSEI": 22300,
+def is_market_open() -> bool:
+    """NSE is open Mon–Fri 9:15 AM – 3:30 PM IST excluding holidays."""
+    now = datetime.now(IST)
+    if now.weekday() >= 5:
+        return False
+    market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return market_open <= now <= market_close
+
+
+async def get_market_status() -> dict:
+    """Return NSE market open/close status."""
+    from app.services.nse_session import nse
+
+    if not _get_mock_mode():
+        try:
+            data = await nse.get("market_status")
+            if data:
+                state = data.get("marketState", [{}])[0]
+                return {
+                    "is_open": state.get("marketStatus") == "Open",
+                    "status_text": state.get("marketStatus", "Unknown"),
+                    "as_of": datetime.now(IST).isoformat(),
+                }
+        except Exception as e:
+            logger.warning(f"NSE market status failed: {e}")
+
+    open_now = is_market_open()
+    return {
+        "is_open":     open_now,
+        "status_text": "Open" if open_now else "Closed",
+        "as_of":       datetime.now(IST).isoformat(),
     }
-    base = base_prices.get(symbol, 1000 + random.uniform(-200, 500))
-    dates = pd.date_range(end=datetime.now(), periods=days, freq="B")
-    np.random.seed(hash(symbol) % (2**31))
-    returns = np.random.normal(0.0005, 0.015, days)
-    prices = base * np.cumprod(1 + returns)
-    highs = prices * (1 + np.abs(np.random.normal(0, 0.008, days)))
-    lows = prices * (1 - np.abs(np.random.normal(0, 0.008, days)))
-    opens = np.roll(prices, 1)
-    opens[0] = prices[0]
-    volumes = np.random.randint(500_000, 5_000_000, days).astype(float)
-
-    df = pd.DataFrame({
-        "Open": opens, "High": highs, "Low": lows,
-        "Close": prices, "Volume": volumes
-    }, index=dates)
-    df.index.name = "Date"
-    return df
-
-
-def _mock_fundamentals(symbol: str) -> dict:
-    """Generate realistic fundamental data for Indian stocks."""
-    base_data = {
-        "RELIANCE.NS": {"market_cap": 19_50_000, "pe_ratio": 28.5, "pb_ratio": 2.4,
-                        "roe": 12.3, "debt_to_equity": 0.45, "current_price": 2920,
-                        "52w_high": 3024, "52w_low": 2220, "promoter_holding": 50.3},
-        "TCS.NS": {"market_cap": 15_10_000, "pe_ratio": 33.2, "pb_ratio": 12.8,
-                   "roe": 52.4, "debt_to_equity": 0.0, "current_price": 4112,
-                   "52w_high": 4592, "52w_low": 3311, "promoter_holding": 71.9},
-        "HDFCBANK.NS": {"market_cap": 12_20_000, "pe_ratio": 19.8, "pb_ratio": 2.8,
-                        "roe": 16.5, "debt_to_equity": 7.2, "current_price": 1648,
-                        "52w_high": 1880, "52w_low": 1363, "promoter_holding": 0.0},
-        "INFY.NS": {"market_cap": 7_40_000, "pe_ratio": 24.6, "pb_ratio": 7.2,
-                    "roe": 32.8, "debt_to_equity": 0.0, "current_price": 1782,
-                    "52w_high": 1950, "52w_low": 1351, "promoter_holding": 14.7},
-        "ICICIBANK.NS": {"market_cap": 8_30_000, "pe_ratio": 17.2, "pb_ratio": 2.5,
-                         "roe": 18.9, "debt_to_equity": 5.8, "current_price": 1185,
-                         "52w_high": 1322, "52w_low": 908, "promoter_holding": 0.0},
-    }
-    default = {
-        "market_cap": random.randint(10_000, 5_00_000),
-        "pe_ratio": round(random.uniform(12, 40), 1),
-        "pb_ratio": round(random.uniform(1, 8), 1),
-        "roe": round(random.uniform(8, 35), 1),
-        "debt_to_equity": round(random.uniform(0, 2), 2),
-        "current_price": round(random.uniform(200, 3000), 2),
-        "52w_high": 0, "52w_low": 0,
-        "promoter_holding": round(random.uniform(25, 75), 1),
-    }
-    data = base_data.get(symbol, default)
-    cp = data["current_price"]
-    if not data.get("52w_high"):
-        data["52w_high"] = round(cp * random.uniform(1.05, 1.35), 2)
-        data["52w_low"] = round(cp * random.uniform(0.65, 0.95), 2)
-
-    data.update({
-        "symbol": symbol,
-        "revenue_growth": round(random.uniform(-5, 25), 1),
-        "profit_growth": round(random.uniform(-10, 35), 1),
-        "fii_holding": round(random.uniform(10, 45), 1),
-        "volume": random.randint(500_000, 10_000_000),
-        "avg_volume": random.randint(500_000, 8_000_000),
-    })
-    return data
-
-
-def _mock_bulk_deals() -> list:
-    """Generate realistic bulk deal mock data."""
-    companies = [
-        ("RELIANCE", "Reliance Industries"), ("TCS", "Tata Consultancy"),
-        ("HDFCBANK", "HDFC Bank"), ("INFY", "Infosys"),
-        ("ICICIBANK", "ICICI Bank"), ("AXISBANK", "Axis Bank"),
-        ("TATAMOTORS", "Tata Motors"), ("WIPRO", "Wipro"),
-        ("SUNPHARMA", "Sun Pharma"), ("BAJFINANCE", "Bajaj Finance"),
-    ]
-    buyers = [
-        "Mirae Asset MF", "SBI Mutual Fund", "HDFC MF", "Nippon India MF",
-        "ICICI Pru MF", "Kotak Mahindra MF", "Axis MF", "DSP MF",
-        "Government Pension Fund Norway", "Vanguard Funds",
-    ]
-    deals = []
-    for i in range(12):
-        sym, name = random.choice(companies)
-        qty = random.randint(100_000, 2_000_000)
-        price = round(random.uniform(200, 3000), 2)
-        deals.append({
-            "symbol": sym, "company": name,
-            "client_name": random.choice(buyers),
-            "deal_type": random.choice(["Buy", "Buy", "Buy", "Sell"]),
-            "quantity": qty,
-            "price": price,
-            "value_cr": round(qty * price / 1e7, 2),
-            "date": (datetime.now() - timedelta(days=random.randint(0, 5))).strftime("%Y-%m-%d"),
-            "exchange": random.choice(["NSE", "BSE"]),
-        })
-    return deals
-
-
-def _mock_insider_trades() -> list:
-    """Generate realistic insider trading mock data."""
-    insiders = [
-        ("RELIANCE", "Mukesh Ambani", "Promoter", 2920),
-        ("TCS", "N Chandrasekaran", "Director", 4112),
-        ("HDFCBANK", "Sashidhar Jagdishan", "MD & CEO", 1648),
-        ("INFY", "Salil Parekh", "MD & CEO", 1782),
-        ("ICICIBANK", "Sandeep Bakhshi", "MD & CEO", 1185),
-        ("BAJFINANCE", "Rajeev Jain", "MD & CEO", 7215),
-        ("TITAN", "C K Venkataraman", "MD", 3610),
-        ("ADANIENT", "Gautam Adani", "Promoter", 3150),
-    ]
-    trades = []
-    for sym, person, category, price in insiders:
-        qty = random.randint(5_000, 200_000)
-        trade_type = random.choice(["Buy", "Buy", "Sell"])
-        pre_holding = round(random.uniform(1, 72), 2)
-        change = round(random.uniform(0.1, 2.5) * (1 if trade_type == "Buy" else -1), 2)
-        trades.append({
-            "symbol": sym, "person_name": person, "category": category,
-            "trade_type": trade_type, "quantity": qty,
-            "value_cr": round(qty * price / 1e7, 2),
-            "date": (datetime.now() - timedelta(days=random.randint(0, 10))).strftime("%Y-%m-%d"),
-            "pre_transaction_holding_pct": pre_holding,
-            "post_transaction_holding_pct": round(pre_holding + change, 2),
-            "price_at_trade": price,
-        })
-    return trades
-
-
-def _mock_corporate_filings() -> list:
-    """Generate realistic corporate filing mock data."""
-    filings_data = [
-        ("RELIANCE", "Capacity expansion: Jamnagar Refinery Phase 3", "Expansion", "BULLISH"),
-        ("TCS", "New order win: $1.2B deal with European retailer", "Order Win", "BULLISH"),
-        ("HDFCBANK", "Q4 FY25 Financial Results - Record NII of ₹29,000 Cr", "Results", "BULLISH"),
-        ("INFY", "Acquisition of German AI company for €210 million", "Acquisition", "BULLISH"),
-        ("ADANIENT", "Promoter pledge reduced by 18% — 8.2 Cr shares freed", "Pledge Reduction", "BULLISH"),
-        ("BAJFINANCE", "Bonus issue 1:1 approved by Board", "Bonus Issue", "BULLISH"),
-        ("ZOMATO", "Change in Top Management: New CFO appointed", "Mgmt Change", "NEUTRAL"),
-        ("COALINDIA", "Auditor concerns on inventory valuation noted", "Auditor Note", "BEARISH"),
-        ("TATAMOTORS", "EV sales cross 1 lakh units — ahead of target", "Milestone", "BULLISH"),
-        ("SUNPHARMA", "USFDA inspection completed, EIR received", "Regulatory", "BULLISH"),
-        ("ITC", "Board approves ₹18,000 Cr share buyback at ₹530", "Buyback", "BULLISH"),
-        ("POWERGRID", "New transmission project worth ₹4,800 Cr approved", "New Project", "BULLISH"),
-    ]
-    results = []
-    for i, (sym, subject, category, direction) in enumerate(filings_data):
-        results.append({
-            "symbol": sym, "subject": subject, "category": category,
-            "direction": direction,
-            "date": (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d"),
-            "headline": subject,
-            "source": "BSE",
-        })
-    return results
-
-
-def _mock_fii_dii_data(days: int = 30) -> list:
-    """Generate realistic FII/DII net flow data."""
-    data = []
-    base_date = datetime.now() - timedelta(days=days)
-    fii_trend = random.choice([1, -1])
-    for i in range(days):
-        date = base_date + timedelta(days=i)
-        if date.weekday() >= 5:
-            continue
-        fii_net = round(fii_trend * random.uniform(200, 3500) * random.choice([1, 1, 1, -1]), 2)
-        dii_net = round(-fii_net * random.uniform(0.6, 1.2) + random.uniform(-300, 300), 2)
-        fii_buy = round(abs(fii_net) + random.uniform(1000, 5000), 2)
-        fii_sell = round(fii_buy - fii_net, 2)
-        dii_buy = round(abs(dii_net) + random.uniform(800, 4000), 2)
-        dii_sell = round(dii_buy - dii_net, 2)
-        data.append({
-            "date": date.strftime("%Y-%m-%d"),
-            "fii_buy": fii_buy, "fii_sell": fii_sell, "fii_net": fii_net,
-            "dii_buy": dii_buy, "dii_sell": dii_sell, "dii_net": dii_net,
-        })
-    return data
-
-
-def _mock_ipo_data() -> list:
-    """Generate realistic IPO data."""
-    return [
-        {"company": "Hyundai Motor India", "open_date": "2026-03-20", "close_date": "2026-03-22",
-         "issue_price": 1960, "lot_size": 7, "subscription_times": 0, "listing_gain_pct": None,
-         "status": "Upcoming", "issue_size_cr": 27870, "gmp": 120},
-        {"company": "Swiggy", "open_date": "2026-03-25", "close_date": "2026-03-27",
-         "issue_price": 390, "lot_size": 38, "subscription_times": 0, "listing_gain_pct": None,
-         "status": "Upcoming", "issue_size_cr": 11327, "gmp": 45},
-        {"company": "NTPC Green Energy", "open_date": "2026-02-22", "close_date": "2026-02-26",
-         "issue_price": 108, "lot_size": 138, "subscription_times": 2.55, "listing_gain_pct": 3.5,
-         "status": "Listed", "issue_size_cr": 10000, "gmp": 0},
-        {"company": "Bajaj Housing Finance", "open_date": "2026-01-09", "close_date": "2026-01-11",
-         "issue_price": 70, "lot_size": 214, "subscription_times": 64.0, "listing_gain_pct": 114.3,
-         "status": "Listed", "issue_size_cr": 6560, "gmp": 0},
-        {"company": "Ola Electric", "open_date": "2025-08-02", "close_date": "2025-08-06",
-         "issue_price": 76, "lot_size": 195, "subscription_times": 4.3, "listing_gain_pct": -2.9,
-         "status": "Listed", "issue_size_cr": 6145, "gmp": 0},
-    ]
-
-
-def _mock_sector_performance() -> list:
-    """Generate realistic sector performance data."""
-    sectors = [
-        ("IT", ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS"]),
-        ("Banking", ["HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "SBIN.NS"]),
-        ("Pharma", ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS"]),
-        ("Auto", ["MARUTI.NS", "TATAMOTORS.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS", "HEROMOTOCO.NS"]),
-        ("FMCG", ["HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS", "DABUR.NS"]),
-        ("Energy", ["RELIANCE.NS", "ONGC.NS", "BPCL.NS", "IOC.NS", "NTPC.NS"]),
-        ("Metals", ["TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "COALINDIA.NS"]),
-        ("Infra", ["LT.NS", "POWERGRID.NS", "ULTRACEMCO.NS", "GRASIM.NS"]),
-        ("Realty", ["DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS"]),
-    ]
-    results = []
-    for sector, _ in sectors:
-        results.append({
-            "sector": sector,
-            "return_1d_pct": round(random.uniform(-2.5, 2.5), 2),
-            "return_1w_pct": round(random.uniform(-5, 5), 2),
-            "return_1m_pct": round(random.uniform(-12, 15), 2),
-            "top_gainer": random.choice(["TATASTEEL", "INFY", "HDFCBANK", "MARUTI", "SUNPHARMA"]),
-            "market_cap_cr": random.randint(50_000, 5_00_000),
-        })
-    return results
-
-
-def _mock_news(symbol: str) -> list:
-    """Generate realistic news for a stock symbol."""
-    sym_clean = symbol.replace(".NS", "").replace(".BO", "")
-    templates = [
-        f"{sym_clean} Q4 results beat Street estimates; profit up 18% YoY",
-        f"Analysts upgrade {sym_clean} to 'Buy'; target price raised to ₹{random.randint(500, 5000)}",
-        f"{sym_clean} announces ₹{random.randint(500, 5000)} Cr capex plan for FY26",
-        f"FII increases stake in {sym_clean} by {round(random.uniform(0.5, 3), 1)}%",
-        f"{sym_clean} signs major deal worth ${random.randint(100, 2000)} million",
-        f"Promoter buys ₹{round(random.uniform(50, 500), 1)} Cr worth of {sym_clean} shares",
-    ]
-    publishers = ["Economic Times", "Business Standard", "Mint", "CNBC TV18", "MoneyControl"]
-    news = []
-    for i, tmpl in enumerate(random.sample(templates, min(5, len(templates)))):
-        news.append({
-            "title": tmpl, "publisher": random.choice(publishers),
-            "link": f"https://economictimes.com/news/{sym_clean.lower()}-{i}",
-            "providerPublishTime": int((datetime.now() - timedelta(hours=i * 4)).timestamp()),
-            "sentiment": _sentiment_score(tmpl),
-        })
-    return news
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PUBLIC API FUNCTIONS
+# INDEX QUOTES
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def get_stock_data(symbol: str, period: str = "1y") -> pd.DataFrame:
+async def get_index_quotes() -> dict:
     """
-    Fetch OHLCV price data for a stock symbol.
-
-    Args:
-        symbol: Yahoo Finance ticker symbol (e.g. 'RELIANCE.NS')
-        period: yfinance period string (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y)
-
-    Returns:
-        DataFrame with columns: Open, High, Low, Close, Volume
+    Fetch live Nifty 50, Sensex, Bank Nifty, India VIX values with sparklines.
+    Cache: 30 seconds.
     """
-    if MOCK_MODE:
-        days_map = {"1d": 1, "5d": 5, "1mo": 22, "3mo": 66, "6mo": 132,
-                    "1y": 252, "2y": 504, "5y": 1260}
-        return _mock_ohlcv(symbol, days_map.get(period, 252))
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
 
-    try:
-        import yfinance as yf
-        loop = asyncio.get_event_loop()
-        df = await loop.run_in_executor(None, lambda: yf.Ticker(symbol).history(period=period))
-        if df.empty:
-            raise ValueError(f"No data returned for {symbol}")
-        return df
-    except Exception as e:
-        logger.warning(f"yfinance fetch failed for {symbol}: {e}. Using mock data.")
-        days_map = {"1d": 1, "5d": 5, "1mo": 22, "3mo": 66, "6mo": 132,
-                    "1y": 252, "2y": 504, "5y": 1260}
-        return _mock_ohlcv(symbol, days_map.get(period, 252))
+    cached = cache.get("index_quotes")
+    if cached:
+        return cached
 
+    result = {}
 
-async def get_fundamentals(symbol: str) -> dict:
-    """
-    Fetch fundamental data for a stock.
+    if not _get_mock_mode():
+        from app.services.nse_session import nse
 
-    Args:
-        symbol: Yahoo Finance ticker symbol.
+        # Nifty 50
+        try:
+            nifty_data = await nse.get("nifty50")
+            for item in nifty_data.get("data", []):
+                if item.get("index") == "NIFTY 50":
+                    result["nifty50"] = {
+                        "name":       "NIFTY 50",
+                        "value":      float(item.get("last", 0)),
+                        "change":     float(item.get("variation", 0)),
+                        "change_pct": float(item.get("percentChange", 0)),
+                        "high":       float(item.get("high", 0)),
+                        "low":        float(item.get("low", 0)),
+                        "sparkline":  [],
+                    }
+                    break
+        except Exception as e:
+            logger.warning(f"NSE Nifty50 failed: {e}")
 
-    Returns:
-        dict with market_cap, pe_ratio, pb_ratio, roe, debt_to_equity,
-        revenue_growth, profit_growth, promoter_holding, fii_holding,
-        52w_high, 52w_low, current_price, volume, avg_volume.
-    """
-    if MOCK_MODE:
-        return _mock_fundamentals(symbol)
+        # Bank Nifty
+        try:
+            bnk_data = await nse.get("banknifty")
+            for item in bnk_data.get("data", []):
+                if item.get("index") == "NIFTY BANK":
+                    result["banknifty"] = {
+                        "name":       "BANK NIFTY",
+                        "value":      float(item.get("last", 0)),
+                        "change":     float(item.get("variation", 0)),
+                        "change_pct": float(item.get("percentChange", 0)),
+                        "high":       float(item.get("high", 0)),
+                        "low":        float(item.get("low", 0)),
+                        "sparkline":  [],
+                    }
+                    break
+        except Exception as e:
+            logger.warning(f"NSE BankNifty failed: {e}")
 
-    try:
-        import yfinance as yf
-        loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, lambda: yf.Ticker(symbol).info)
-        if not info or "regularMarketPrice" not in info:
-            raise ValueError("Empty info returned")
-
-        return {
-            "symbol": symbol,
-            "market_cap": info.get("marketCap", 0) // 1_00_00_000,  # Convert to Cr
-            "pe_ratio": round(info.get("trailingPE", 0) or 0, 2),
-            "pb_ratio": round(info.get("priceToBook", 0) or 0, 2),
-            "roe": round((info.get("returnOnEquity", 0) or 0) * 100, 2),
-            "debt_to_equity": round(info.get("debtToEquity", 0) or 0, 2),
-            "revenue_growth": round((info.get("revenueGrowth", 0) or 0) * 100, 2),
-            "profit_growth": round((info.get("earningsGrowth", 0) or 0) * 100, 2),
-            "promoter_holding": round(info.get("heldPercentInsiders", 0) * 100, 2),
-            "fii_holding": round(info.get("heldPercentInstitutions", 0) * 100, 2),
-            "52w_high": info.get("fiftyTwoWeekHigh", 0),
-            "52w_low": info.get("fiftyTwoWeekLow", 0),
-            "current_price": info.get("regularMarketPrice", info.get("currentPrice", 0)),
-            "volume": info.get("regularMarketVolume", 0),
-            "avg_volume": info.get("averageVolume", 0),
-            "company_name": info.get("longName", symbol),
-            "sector": info.get("sector", "Unknown"),
-        }
-    except Exception as e:
-        logger.warning(f"Fundamentals fetch failed for {symbol}: {e}. Using mock.")
-        return _mock_fundamentals(symbol)
-
-
-async def get_news(symbol: str) -> list:
-    """
-    Fetch recent news for a stock with sentiment scoring.
-
-    Args:
-        symbol: Yahoo Finance ticker symbol.
-
-    Returns:
-        list of dicts with title, publisher, link, providerPublishTime, sentiment.
-    """
-    if MOCK_MODE:
-        return _mock_news(symbol)
-
-    try:
-        import yfinance as yf
-        loop = asyncio.get_event_loop()
-        ticker = yf.Ticker(symbol)
-        news_raw = await loop.run_in_executor(None, lambda: ticker.news)
-        if not news_raw:
-            return _mock_news(symbol)
-
-        results = []
-        for item in news_raw[:10]:
-            title = item.get("title", "")
-            results.append({
-                "title": title,
-                "publisher": item.get("publisher", "Unknown"),
-                "link": item.get("link", ""),
-                "providerPublishTime": item.get("providerPublishTime", 0),
-                "sentiment": _sentiment_score(title),
-            })
-        return results
-    except Exception as e:
-        logger.warning(f"News fetch failed for {symbol}: {e}. Using mock.")
-        return _mock_news(symbol)
-
-
-async def get_bulk_block_deals() -> list:
-    """
-    Fetch bulk and block deals from NSE.
-
-    Returns:
-        list of dicts with symbol, client_name, deal_type, quantity,
-        price, value_cr, date, exchange.
-    """
-    if MOCK_MODE:
-        return _mock_bulk_deals()
-
-    try:
-        from nsepython import get_bulkdeals_data, get_blockdeals_data
-        loop = asyncio.get_event_loop()
-        bulk = await loop.run_in_executor(None, get_bulkdeals_data)
-        block = await loop.run_in_executor(None, get_blockdeals_data)
-
-        results = []
-        for df_raw, deal_type in [(bulk, "Bulk"), (block, "Block")]:
-            if df_raw is None:
-                continue
-            if isinstance(df_raw, pd.DataFrame):
-                for _, row in df_raw.iterrows():
-                    try:
-                        qty = int(str(row.get("QUANTITY TRADED", "0")).replace(",", ""))
-                        price = float(str(row.get("TRADE PRICE/ WTED AVG PRICE", "0")).replace(",", ""))
-                        results.append({
-                            "symbol": str(row.get("SYMBOL", "")),
-                            "client_name": str(row.get("CLIENT NAME", "")),
-                            "deal_type": deal_type,
-                            "quantity": qty,
-                            "price": price,
-                            "value_cr": round(qty * price / 1e7, 2),
-                            "date": str(row.get("DATE", datetime.now().strftime("%Y-%m-%d"))),
-                            "exchange": "NSE",
-                        })
-                    except Exception:
-                        continue
-        return results if results else _mock_bulk_deals()
-    except Exception as e:
-        logger.warning(f"Bulk/block deals fetch failed: {e}. Using mock.")
-        return _mock_bulk_deals()
-
-
-async def get_insider_trades() -> list:
-    """
-    Fetch insider trading data from NSE.
-
-    Returns:
-        list of dicts with symbol, person_name, category, trade_type,
-        quantity, value_cr, date, pre/post holding percentages.
-    """
-    if MOCK_MODE:
-        return _mock_insider_trades()
-
-    try:
-        import httpx
-        url = "https://www.nseindia.com/api/corporates-pit?index=equities&from_date={}&to_date={}"
-        from_date = (datetime.now() - timedelta(days=30)).strftime("%d-%m-%Y")
-        to_date = datetime.now().strftime("%d-%m-%Y")
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-            "Referer": "https://www.nseindia.com/",
-        }
-        async with httpx.AsyncClient(headers=headers, timeout=10) as client:
-            resp = await client.get(url.format(from_date, to_date))
-            data = resp.json()
-
-        trades = []
-        for item in data.get("data", [])[:15]:
-            qty = int(str(item.get("noOfSecuritiesAcquiredOrDisposed", "0")).replace(",", "") or "0")
-            price = float(str(item.get("valueOfSecuritiesAcquiredOrDisposed", "0")).replace(",", "") or "0")
-            trades.append({
-                "symbol": item.get("symbol", ""),
-                "person_name": item.get("name", ""),
-                "category": item.get("category", "Director"),
-                "trade_type": "Buy" if item.get("typeOfTransaction", "").lower() == "buy" else "Sell",
-                "quantity": qty,
-                "value_cr": round(qty * price / 1e7, 2) if price > 100 else round(price / 1e7, 2),
-                "date": item.get("date", datetime.now().strftime("%Y-%m-%d")),
-                "pre_transaction_holding_pct": float(item.get("beforeAcqPercetage", 0) or 0),
-                "post_transaction_holding_pct": float(item.get("afterAcqPercentage", 0) or 0),
-            })
-        return trades if trades else _mock_insider_trades()
-    except Exception as e:
-        logger.warning(f"Insider trades fetch failed: {e}. Using mock.")
-        return _mock_insider_trades()
-
-
-async def get_corporate_filings(symbol: str = None) -> list:
-    """
-    Fetch recent corporate filings from BSE.
-
-    Args:
-        symbol: Optional BSE scrip code or symbol to filter.
-
-    Returns:
-        list of dicts with symbol, subject, date, category, headline.
-    """
-    if MOCK_MODE:
-        filings = _mock_corporate_filings()
-        if symbol:
-            sym_clean = symbol.replace(".NS", "").replace(".BO", "")
-            filings = [f for f in filings if f["symbol"] == sym_clean] or filings
-        return filings
-
-    try:
-        import httpx
-        from datetime import datetime
-        to_date = datetime.now().strftime("%Y%m%d")
-        from_date = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-        url = (f"https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w"
-               f"?strCat=-1&strPrevDate={from_date}&strScrip=&strSearch=P"
-               f"&strToDate={to_date}&strType=C")
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.bseindia.com/"}
-        async with httpx.AsyncClient(headers=headers, timeout=10) as client:
-            resp = await client.get(url)
-            data = resp.json()
-
-        filings = []
-        for item in data.get("Table", [])[:20]:
-            filings.append({
-                "symbol": item.get("SLONGNAME", "").strip(),
-                "subject": item.get("NEWSSUB", ""),
-                "date": item.get("NEWS_DT", "")[:10],
-                "category": item.get("CATEGORYNAME", ""),
-                "headline": item.get("HEADLINE", item.get("NEWSSUB", "")),
-                "source": "BSE",
-            })
-        return filings if filings else _mock_corporate_filings()
-    except Exception as e:
-        logger.warning(f"Corporate filings fetch failed: {e}. Using mock.")
-        filings = _mock_corporate_filings()
-        if symbol:
-            sym_clean = symbol.replace(".NS", "").replace(".BO", "")
-            filings = [f for f in filings if f["symbol"] == sym_clean] or filings
-        return filings
-
-
-async def get_fii_dii_data(days: int = 30) -> list:
-    """
-    Fetch FII/DII net investment data.
-
-    Args:
-        days: Number of trading days to fetch.
-
-    Returns:
-        list of dicts with date, fii_buy, fii_sell, fii_net, dii_buy, dii_sell, dii_net.
-    """
-    if MOCK_MODE:
-        return _mock_fii_dii_data(days)
-
-    try:
-        import httpx
-        url = "https://www.nseindia.com/api/fiidiiTradeReact"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-            "Referer": "https://www.nseindia.com/",
-        }
-        async with httpx.AsyncClient(headers=headers, timeout=10) as client:
-            resp = await client.get(url)
-            data = resp.json()
-
-        results = []
-        for item in data[:days]:
-            try:
-                results.append({
-                    "date": item.get("date", ""),
-                    "fii_buy": float(str(item.get("fiiBuy", "0")).replace(",", "") or 0),
-                    "fii_sell": float(str(item.get("fiiSell", "0")).replace(",", "") or 0),
-                    "fii_net": float(str(item.get("fiiNet", "0")).replace(",", "") or 0),
-                    "dii_buy": float(str(item.get("diiBuy", "0")).replace(",", "") or 0),
-                    "dii_sell": float(str(item.get("diiSell", "0")).replace(",", "") or 0),
-                    "dii_net": float(str(item.get("diiNet", "0")).replace(",", "") or 0),
-                })
-            except Exception:
-                continue
-        return results if results else _mock_fii_dii_data(days)
-    except Exception as e:
-        logger.warning(f"FII/DII data fetch failed: {e}. Using mock.")
-        return _mock_fii_dii_data(days)
-
-
-async def get_ipo_data() -> list:
-    """
-    Fetch upcoming and recent IPO data.
-
-    Returns:
-        list of IPO dicts with company, open_date, close_date, issue_price,
-        lot_size, subscription_times, listing_gain_pct, status.
-    """
-    # IPO data requires paid APIs; use mock data
-    return _mock_ipo_data()
-
-
-async def get_sector_performance() -> list:
-    """
-    Calculate sector performance by averaging representative stock returns.
-
-    Returns:
-        list of sector dicts with return_1d_pct, return_1w_pct, return_1m_pct.
-    """
-    if MOCK_MODE:
-        return _mock_sector_performance()
-
-    try:
-        import yfinance as yf
-        sector_stocks = {
-            "IT": ["TCS.NS", "INFY.NS", "WIPRO.NS"],
-            "Banking": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS"],
-            "Pharma": ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS"],
-            "Auto": ["MARUTI.NS", "TATAMOTORS.NS", "BAJAJ-AUTO.NS"],
-            "FMCG": ["HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS"],
-            "Energy": ["RELIANCE.NS", "ONGC.NS", "BPCL.NS"],
-            "Metals": ["TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS"],
-            "Infra": ["LT.NS", "POWERGRID.NS", "ULTRACEMCO.NS"],
-            "Realty": ["DLF.NS", "GODREJPROP.NS"],
-        }
-        results = []
-        loop = asyncio.get_event_loop()
-
-        for sector, symbols in sector_stocks.items():
-            try:
-                data = await loop.run_in_executor(
-                    None, lambda syms=symbols: yf.download(syms, period="1mo", progress=False)["Close"]
-                )
-                if data.empty:
-                    raise ValueError("Empty data")
-                r1d = data.pct_change(1).iloc[-1].mean() * 100
-                r1w = data.pct_change(5).iloc[-1].mean() * 100
-                r1m = data.pct_change(22).iloc[-1].mean() * 100
-                results.append({
-                    "sector": sector,
-                    "return_1d_pct": round(r1d, 2),
-                    "return_1w_pct": round(r1w, 2),
-                    "return_1m_pct": round(r1m, 2),
-                })
-            except Exception:
-                results.append({
-                    "sector": sector,
-                    "return_1d_pct": round(random.uniform(-2, 2), 2),
-                    "return_1w_pct": round(random.uniform(-5, 5), 2),
-                    "return_1m_pct": round(random.uniform(-10, 12), 2),
-                })
-        return results
-    except Exception as e:
-        logger.warning(f"Sector performance fetch failed: {e}. Using mock.")
-        return _mock_sector_performance()
-
-
-async def get_market_overview() -> dict:
-    """
-    Fetch a combined market snapshot for the Dashboard.
-
-    Returns:
-        dict with nifty50, sensex, top_gainers, top_losers, market_breadth,
-        fii_net_today, vix, sentiment.
-    """
-    if MOCK_MODE:
-        nifty = round(22350 + random.uniform(-200, 200), 2)
-        sensex = round(73800 + random.uniform(-600, 600), 2)
-        nifty_chg = round(random.uniform(-1.5, 1.5), 2)
-        sensex_chg = round(random.uniform(-1.5, 1.5), 2)
-    else:
+        # Sensex + VIX via yfinance
         try:
             import yfinance as yf
             loop = asyncio.get_event_loop()
-            nifty_data = await loop.run_in_executor(
-                None, lambda: yf.Ticker("^NSEI").history(period="2d"))
-            sensex_data = await loop.run_in_executor(
-                None, lambda: yf.Ticker("^BSESN").history(period="2d"))
-            nifty = round(nifty_data["Close"].iloc[-1], 2)
-            sensex = round(sensex_data["Close"].iloc[-1], 2)
-            nifty_chg = round(((nifty - nifty_data["Close"].iloc[-2]) / nifty_data["Close"].iloc[-2]) * 100, 2)
-            sensex_chg = round(((sensex - sensex_data["Close"].iloc[-2]) / sensex_data["Close"].iloc[-2]) * 100, 2)
+            hist = await loop.run_in_executor(
+                None,
+                lambda: yf.download(
+                    ["^BSESN", "^INDIAVIX", "^NSEI", "^NSEBANK"],
+                    period="5d", interval="1d",
+                    progress=False, threads=False,
+                    group_by="ticker",
+                )
+            )
+            if not hist.empty:
+                def _extract(sym, name, disp_name):
+                    try:
+                        closes = hist[sym]["Close"].dropna()
+                        if len(closes) < 2:
+                            return None
+                        curr = float(closes.iloc[-1])
+                        prev = float(closes.iloc[-2])
+                        chg  = curr - prev
+                        return {
+                            "name":       disp_name,
+                            "value":      round(curr, 2),
+                            "change":     round(chg, 2),
+                            "change_pct": round((chg / prev) * 100, 2) if prev else 0,
+                            "high":       float(hist[sym]["High"].iloc[-1]),
+                            "low":        float(hist[sym]["Low"].iloc[-1]),
+                            "sparkline":  [],
+                        }
+                    except Exception:
+                        return None
+
+                if "sensex" not in result:
+                    s = _extract("^BSESN", "^BSESN", "SENSEX")
+                    if s:
+                        result["sensex"] = s
+                if "vix" not in result:
+                    v = _extract("^INDIAVIX", "^INDIAVIX", "INDIA VIX")
+                    if v:
+                        result["vix"] = v
+                if "nifty50" not in result:
+                    n = _extract("^NSEI", "^NSEI", "NIFTY 50")
+                    if n:
+                        result["nifty50"] = n
+                if "banknifty" not in result:
+                    b = _extract("^NSEBANK", "^NSEBANK", "BANK NIFTY")
+                    if b:
+                        result["banknifty"] = b
+        except Exception as e:
+            logger.warning(f"yfinance index fetch failed: {e}")
+
+        # Add sparklines
+        try:
+            result = await _add_sparklines(result)
+        except Exception as e:
+            logger.warning(f"Sparkline generation failed: {e}")
+
+    # Fill missing with mock
+    mock = MOCK_DATA["index_quotes"]
+    for k in ["nifty50", "sensex", "banknifty", "vix"]:
+        if k not in result:
+            result[k] = mock[k]
+
+    cache.set("index_quotes", result, ttl_seconds=30)
+    return result
+
+
+async def _add_sparklines(indices: dict) -> dict:
+    """Add 20-point intraday sparkline arrays (% change from open)."""
+    import yfinance as yf
+
+    symbol_map = {
+        "nifty50":   "^NSEI",
+        "sensex":    "^BSESN",
+        "banknifty": "^NSEBANK",
+        "vix":       "^INDIAVIX",
+    }
+    loop = asyncio.get_event_loop()
+
+    for key, yf_sym in symbol_map.items():
+        if key not in indices:
+            continue
+        try:
+            hist = await loop.run_in_executor(
+                None,
+                lambda s=yf_sym: yf.Ticker(s).history(period="1d", interval="5m")
+            )
+            if not hist.empty:
+                closes = hist["Close"].dropna().tolist()
+                if closes:
+                    base = closes[0] or 1
+                    sparkline = [round(((c - base) / base) * 100, 3) for c in closes[-20:]]
+                    indices[key]["sparkline"] = sparkline
         except Exception:
-            nifty = round(22350 + random.uniform(-200, 200), 2)
-            sensex = round(73800 + random.uniform(-600, 600), 2)
-            nifty_chg = round(random.uniform(-1.5, 1.5), 2)
-            sensex_chg = round(random.uniform(-1.5, 1.5), 2)
+            indices[key]["sparkline"] = []
 
-    gainers = [
-        {"symbol": "TATAMOTORS", "change_pct": round(random.uniform(2, 6), 2), "price": 962},
-        {"symbol": "ADANIENT", "change_pct": round(random.uniform(2, 5), 2), "price": 3151},
-        {"symbol": "JSWSTEEL", "change_pct": round(random.uniform(1.5, 4), 2), "price": 985},
-        {"symbol": "COALINDIA", "change_pct": round(random.uniform(1, 3), 2), "price": 485},
-        {"symbol": "HINDALCO", "change_pct": round(random.uniform(1, 3), 2), "price": 698},
-    ]
-    losers = [
-        {"symbol": "NESTLEIND", "change_pct": round(random.uniform(-4, -1.5), 2), "price": 24012},
-        {"symbol": "BRITANNIA", "change_pct": round(random.uniform(-3, -1), 2), "price": 4892},
-        {"symbol": "HDFCBANK", "change_pct": round(random.uniform(-2, -0.5), 2), "price": 1648},
-        {"symbol": "INFY", "change_pct": round(random.uniform(-2, -0.5), 2), "price": 1782},
-        {"symbol": "WIPRO", "change_pct": round(random.uniform(-2, -0.5), 2), "price": 541},
-    ]
+    return indices
 
-    advances = random.randint(1100, 1600)
-    declines = random.randint(700, 1200)
-    unchanged = 2500 - advances - declines
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SINGLE STOCK QUOTE
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_stock_quote(symbol: str) -> dict:
+    """
+    Fetch live quote for a single NSE stock (symbol WITHOUT .NS suffix).
+    Cache: 10 seconds.
+    """
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    cache_key = f"quote:{symbol}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    if not _get_mock_mode():
+        from app.services.nse_session import nse
+
+        # Try NSE API first
+        try:
+            data = await nse.get("quote", symbol=symbol)
+            if data:
+                price_info = data.get("priceInfo", {})
+                meta       = data.get("metadata", {})
+                quote = {
+                    "symbol":       symbol,
+                    "company_name": meta.get("companyName", symbol),
+                    "ltp":          float(price_info.get("lastPrice", 0)),
+                    "open":         float(price_info.get("open", 0)),
+                    "high":         float(price_info.get("intraDayHighLow", {}).get("max", 0)),
+                    "low":          float(price_info.get("intraDayHighLow", {}).get("min", 0)),
+                    "prev_close":   float(price_info.get("previousClose", 0)),
+                    "change":       float(price_info.get("change", 0)),
+                    "change_pct":   float(price_info.get("pChange", 0)),
+                    "volume":       int(data.get("marketDeptOrderBook", {}).get("tradeInfo", {}).get("totalTradedVolume", 0)),
+                    "52w_high":     float(price_info.get("weekHighLow", {}).get("max", 0)),
+                    "52w_low":      float(price_info.get("weekHighLow", {}).get("min", 0)),
+                    "timestamp":    datetime.now(IST).isoformat(),
+                }
+                cache.set(cache_key, quote, ttl_seconds=10)
+                return quote
+        except Exception as e:
+            logger.warning(f"NSE quote for {symbol} failed: {e}")
+
+        # Fallback: yfinance
+        try:
+            import yfinance as yf
+            loop = asyncio.get_event_loop()
+            info = await loop.run_in_executor(
+                None, lambda: yf.Ticker(f"{symbol}.NS").fast_info
+            )
+            ltp  = float(info.last_price or 0)
+            prev = float(info.previous_close or ltp)
+            quote = {
+                "symbol":       symbol,
+                "company_name": symbol,
+                "ltp":          round(ltp, 2),
+                "change":       round(ltp - prev, 2),
+                "change_pct":   round(((ltp - prev) / prev) * 100, 2) if prev else 0,
+                "52w_high":     float(info.year_high or 0),
+                "52w_low":      float(info.year_low  or 0),
+                "market_cap":   int(info.market_cap or 0),
+                "timestamp":    datetime.now(IST).isoformat(),
+            }
+            cache.set(cache_key, quote, ttl_seconds=15)
+            return quote
+        except Exception as e:
+            logger.warning(f"yfinance quote for {symbol} failed: {e}")
+
+    # Final fallback: mock
+    mock = MOCK_DATA["stock_quotes"].get(symbol, MOCK_DATA["stock_quotes"]["RELIANCE"])
+    mock = dict(mock)
+    mock["symbol"] = symbol
+    return mock
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MULTIPLE STOCK QUOTES (batch)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_multiple_quotes(symbols: list) -> list:
+    """Batch-fetch quotes for multiple symbols using yfinance download."""
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    key = f"quotes:{'_'.join(sorted(s.upper() for s in symbols[:10]))}"
+    cached = cache.get(key)
+    if cached:
+        return cached
+
+    results = []
+
+    if not _get_mock_mode():
+        try:
+            import yfinance as yf
+            yf_symbols = [f"{s.upper()}.NS" for s in symbols]
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(
+                None,
+                lambda: yf.download(
+                    yf_symbols, period="2d", interval="1d",
+                    progress=False, threads=False, group_by="ticker",
+                )
+            )
+            for sym in symbols:
+                yf_sym = f"{sym.upper()}.NS"
+                try:
+                    closes = data[yf_sym]["Close"].dropna()
+                    if len(closes) >= 2:
+                        curr = float(closes.iloc[-1])
+                        prev = float(closes.iloc[-2])
+                        chg  = curr - prev
+                        results.append({
+                            "symbol":     sym.upper(),
+                            "ltp":        round(curr, 2),
+                            "change":     round(chg, 2),
+                            "change_pct": round((chg / prev) * 100, 2) if prev else 0,
+                            "volume":     int(data[yf_sym]["Volume"].iloc[-1]),
+                            "high":       float(data[yf_sym]["High"].iloc[-1]),
+                            "low":        float(data[yf_sym]["Low"].iloc[-1]),
+                            "timestamp":  datetime.now(IST).isoformat(),
+                        })
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Batch quotes failed: {e}")
+
+    if not results:
+        results = MOCK_DATA["multiple_quotes"]
+
+    cache.set(key, results, ttl_seconds=30)
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOP GAINERS / LOSERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_top_movers() -> dict:
+    """Fetch top 10 gainers and losers from NSE. Cache: 60s."""
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    cached = cache.get("top_movers")
+    if cached:
+        return cached
+
+    gainers, losers = [], []
+
+    if not _get_mock_mode():
+        from app.services.nse_session import nse
+        try:
+            g_data = await nse.get("top_gainers")
+            for item in g_data.get("data", [])[:10]:
+                gainers.append({
+                    "symbol":     item.get("symbol", ""),
+                    "company":    item.get("companyName", item.get("symbol", "")),
+                    "ltp":        float(item.get("ltp", 0)),
+                    "change_pct": float(item.get("netPrice", 0)),
+                    "volume":     int(item.get("tradedQuantity", 0)),
+                })
+        except Exception as e:
+            logger.warning(f"NSE top gainers failed: {e}")
+
+        try:
+            l_data = await nse.get("top_losers")
+            for item in l_data.get("data", [])[:10]:
+                losers.append({
+                    "symbol":     item.get("symbol", ""),
+                    "company":    item.get("companyName", item.get("symbol", "")),
+                    "ltp":        float(item.get("ltp", 0)),
+                    "change_pct": float(item.get("netPrice", 0)),
+                    "volume":     int(item.get("tradedQuantity", 0)),
+                })
+        except Exception as e:
+            logger.warning(f"NSE top losers failed: {e}")
+
+    if not gainers:
+        gainers = MOCK_DATA["top_movers"]["gainers"]
+    if not losers:
+        losers  = MOCK_DATA["top_movers"]["losers"]
+
+    result = {"gainers": gainers, "losers": losers}
+    cache.set("top_movers", result, ttl_seconds=60)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FII / DII DATA
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_fii_dii_data(days: int = 30) -> list:
+    """
+    Fetch FII/DII net buy-sell data (₹ Crore) from NSE.
+    Cache: 1 hour.
+    """
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    cache_key = f"fii_dii:{days}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    if not _get_mock_mode():
+        from app.services.nse_session import nse
+        try:
+            data = await nse.get("fii_dii")
+            if data:
+                rows = []
+                for item in data[:days]:
+                    fii_buy  = float(item.get("buyValue",  0) or 0)
+                    fii_sell = float(item.get("sellValue", 0) or 0)
+                    # DII fields vary by NSE API version
+                    dii_buy  = float(item.get("dii_buy",   item.get("buyValue2",  0)) or 0)
+                    dii_sell = float(item.get("dii_sell",  item.get("sellValue2", 0)) or 0)
+                    rows.append({
+                        "date":     item.get("date", ""),
+                        "fii_buy":  fii_buy,
+                        "fii_sell": fii_sell,
+                        "fii_net":  round(fii_buy - fii_sell, 2),
+                        "dii_buy":  dii_buy,
+                        "dii_sell": dii_sell,
+                        "dii_net":  round(dii_buy - dii_sell, 2),
+                    })
+                if rows:
+                    cache.set(cache_key, rows, ttl_seconds=3600)
+                    return rows
+        except Exception as e:
+            logger.warning(f"NSE FII/DII failed: {e}")
+
+    result = MOCK_DATA["fii_dii_data"][:days]
+    cache.set(cache_key, result, ttl_seconds=3600)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BULK AND BLOCK DEALS
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_bulk_block_deals(days_back: int = 7) -> dict:
+    """
+    Fetch bulk and block deals from NSE.
+    Cache: 30 minutes.
+    """
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    cache_key = f"deals:{days_back}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    to_date   = datetime.now(IST).strftime("%d-%m-%Y")
+    from_date = (datetime.now(IST) - timedelta(days=days_back)).strftime("%d-%m-%Y")
+    bulk_deals, block_deals = [], []
+
+    if not _get_mock_mode():
+        from app.services.nse_session import nse
+        try:
+            data = await nse.get("bulk_deals", from_date=from_date, to_date=to_date)
+            for item in data.get("data", []):
+                qty   = float(item.get("quantity", 0) or 0)
+                price = float(item.get("tradePrice", item.get("avg_price", 0)) or 0)
+                bulk_deals.append({
+                    "symbol":      item.get("symbol", ""),
+                    "client_name": item.get("clientName", item.get("client", "")),
+                    "buy_sell":    item.get("buySell", "BUY"),
+                    "quantity":    int(qty),
+                    "price":       price,
+                    "value_cr":    round((qty * price) / 1e7, 2),
+                    "date":        item.get("tradeDate", item.get("date", "")),
+                    "deal_type":   "BULK",
+                })
+        except Exception as e:
+            logger.warning(f"NSE bulk deals failed: {e}")
+
+        try:
+            data = await nse.get("block_deals", from_date=from_date, to_date=to_date)
+            for item in data.get("data", []):
+                qty   = float(item.get("quantity", 0) or 0)
+                price = float(item.get("tradePrice", item.get("avg_price", 0)) or 0)
+                block_deals.append({
+                    "symbol":      item.get("symbol", ""),
+                    "client_name": item.get("clientName", item.get("client", "")),
+                    "buy_sell":    item.get("buySell", "BUY"),
+                    "quantity":    int(qty),
+                    "price":       price,
+                    "value_cr":    round((qty * price) / 1e7, 2),
+                    "date":        item.get("tradeDate", item.get("date", "")),
+                    "deal_type":   "BLOCK",
+                })
+        except Exception as e:
+            logger.warning(f"NSE block deals failed: {e}")
+
+    if not bulk_deals:
+        bulk_deals  = MOCK_DATA["bulk_deals"]
+    if not block_deals:
+        block_deals = MOCK_DATA["block_deals"]
+
+    result = {"bulk": bulk_deals, "block": block_deals}
+    cache.set(cache_key, result, ttl_seconds=1800)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INSIDER TRADES
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_insider_trades(days_back: int = 14) -> list:
+    """
+    Fetch SEBI insider trading disclosures from NSE.
+    Cache: 30 minutes.
+    """
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    cache_key = f"insider:{days_back}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    to_date   = datetime.now(IST).strftime("%d-%m-%Y")
+    from_date = (datetime.now(IST) - timedelta(days=days_back)).strftime("%d-%m-%Y")
+    trades = []
+
+    if not _get_mock_mode():
+        from app.services.nse_session import nse
+        try:
+            data = await nse.get("insider_trades", from_date=from_date, to_date=to_date)
+            for item in data.get("data", []):
+                qty   = float(item.get("secAcq", item.get("noSecuritiesBought", 0)) or 0)
+                price = float(item.get("secVal", item.get("price", 0)) or 0)
+                value_cr = round((qty * price) / 1e7, 2) if price > 0 else round(
+                    float(item.get("value", 0) or 0) / 1e7, 2
+                )
+                trades.append({
+                    "symbol":            item.get("symbol", ""),
+                    "person_name":       item.get("acqName", item.get("name", "")),
+                    "category":          item.get("personCategory", "Promoter"),
+                    "trade_type":        "BUY" if float(item.get("secAcq", 0) or 0) > 0 else "SELL",
+                    "quantity":          int(qty),
+                    "value_cr":          value_cr,
+                    "date":              item.get("date", item.get("acqfromDt", "")),
+                    "pre_holding_pct":   float(item.get("befAcqSharesPerc", 0) or 0),
+                    "post_holding_pct":  float(item.get("afterAcqSharesPerc", 0) or 0),
+                    "mode":              item.get("modeOfAcq", "Market Purchase"),
+                })
+            if trades:
+                cache.set(cache_key, trades, ttl_seconds=1800)
+                return trades
+        except Exception as e:
+            logger.warning(f"NSE insider trades failed: {e}")
+
+    result = MOCK_DATA["insider_trades"]
+    cache.set(cache_key, result, ttl_seconds=1800)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CORPORATE FILINGS  (BSE India primary source)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_corporate_filings(days_back: int = 3, symbol: Optional[str] = None) -> list:
+    """
+    Fetch recent corporate filings/announcements from BSE India API.
+    Cache: 15 minutes.
+    """
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    cache_key = f"filings:{days_back}:{symbol or 'all'}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    filings = []
+
+    if not _get_mock_mode():
+        try:
+            import httpx
+            to_date   = datetime.now(IST).strftime("%Y%m%d")
+            from_date = (datetime.now(IST) - timedelta(days=days_back)).strftime("%Y%m%d")
+            url = (
+                f"https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w"
+                f"?strCat=-1&strPrevDate={from_date}&strScrip=&strSearch=P"
+                f"&strToDate={to_date}&strType=C&subcategory=-1"
+            )
+            async with httpx.AsyncClient(
+                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bseindia.com"},
+                timeout=15.0,
+            ) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+            await asyncio.sleep(3)  # BSE rate limit
+
+            for item in data.get("Table", [])[:60]:
+                f = {
+                    "symbol":   item.get("SCRIP_CD", ""),
+                    "company":  item.get("SLONGNAME", ""),
+                    "subject":  item.get("NEWSSUB", ""),
+                    "category": item.get("CATEGORYNAME", ""),
+                    "date":     item.get("NEWS_DT", ""),
+                    "headline": item.get("HEADLINE", item.get("NEWSSUB", "")),
+                }
+                if symbol and str(f["symbol"]) != str(symbol):
+                    continue
+                filings.append(f)
+
+            if filings:
+                cache.set(cache_key, filings, ttl_seconds=900)
+                return filings
+        except Exception as e:
+            logger.warning(f"BSE filings failed: {e}")
+
+        # Fallback: NSE announcements
+        try:
+            from app.services.nse_session import nse
+            to_date_nse   = datetime.now(IST).strftime("%d-%m-%Y")
+            from_date_nse = (datetime.now(IST) - timedelta(days=days_back)).strftime("%d-%m-%Y")
+            data = await nse.get("corporate_filings",
+                                  from_date=from_date_nse, to_date=to_date_nse)
+            for item in data[:60]:
+                f = {
+                    "symbol":   item.get("symbol", ""),
+                    "company":  item.get("comp", ""),
+                    "subject":  item.get("subject", ""),
+                    "category": item.get("sub_cat", item.get("category", "")),
+                    "date":     item.get("an_dt", ""),
+                    "headline": item.get("desc", item.get("subject", "")),
+                }
+                if symbol and f["symbol"] != symbol:
+                    continue
+                filings.append(f)
+            if filings:
+                cache.set(cache_key, filings, ttl_seconds=900)
+                return filings
+        except Exception as e:
+            logger.warning(f"NSE announcements failed: {e}")
+
+    result = MOCK_DATA["corporate_filings"]
+    if symbol:
+        result = [f for f in result if str(f.get("symbol", "")) == str(symbol)]
+    cache.set(cache_key, result, ttl_seconds=900)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OHLCV HISTORY  (yfinance)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> list:
+    """
+    Fetch OHLCV data for charting.
+    symbol: NSE symbol WITHOUT .NS suffix.
+    period: 1mo, 3mo, 6mo, 1y, 2y, 5y  |  interval: 5m, 15m, 1h, 1d, 1wk
+    Cache: 1 hour for daily; 60s for intraday.
+    """
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    cache_key = f"ohlcv:{symbol}:{period}:{interval}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    if not _get_mock_mode():
+        try:
+            import yfinance as yf
+            loop = asyncio.get_event_loop()
+            hist = await loop.run_in_executor(
+                None,
+                lambda: yf.Ticker(f"{symbol}.NS").history(
+                    period=period.replace("1w", "5d"),
+                    interval=interval,
+                    auto_adjust=True,
+                    prepost=False,
+                )
+            )
+            if not hist.empty:
+                rows = []
+                for dt, row in hist.iterrows():
+                    rows.append({
+                        "date":   str(dt)[:19],
+                        "open":   round(float(row["Open"]),   2),
+                        "high":   round(float(row["High"]),   2),
+                        "low":    round(float(row["Low"]),    2),
+                        "close":  round(float(row["Close"]),  2),
+                        "volume": int(row["Volume"]),
+                    })
+                ttl = 60 if interval in ("1m", "5m", "15m", "30m") else 3600
+                cache.set(cache_key, rows, ttl_seconds=ttl)
+                return rows
+        except Exception as e:
+            logger.warning(f"yfinance OHLCV for {symbol} failed: {e}")
+
+    sym_key = symbol.upper().replace(".NS", "")
+    result = MOCK_DATA["ohlcv"].get(sym_key, MOCK_DATA["ohlcv"]["RELIANCE"])
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FUNDAMENTALS
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_fundamentals(symbol: str) -> dict:
+    """
+    Fetch company fundamentals via yfinance.
+    symbol may include .NS suffix — will be normalised.
+    Cache: 1 hour.
+    """
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    sym_clean = symbol.upper().replace(".NS", "")
+    cache_key = f"fundamentals:{sym_clean}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    if not _get_mock_mode():
+        try:
+            import yfinance as yf
+            loop = asyncio.get_event_loop()
+            info = await loop.run_in_executor(
+                None,
+                lambda: yf.Ticker(f"{sym_clean}.NS").info
+            )
+            result = {
+                "symbol":          sym_clean,
+                "company_name":    info.get("longName", sym_clean),
+                "sector":          info.get("sector", ""),
+                "industry":        info.get("industry", ""),
+                "market_cap_cr":   round((info.get("marketCap", 0) or 0) / 1e7, 2),
+                "current_price":   info.get("currentPrice", info.get("regularMarketPrice", 0)),
+                "pe_ratio":        info.get("trailingPE", info.get("forwardPE")),
+                "pb_ratio":        info.get("priceToBook"),
+                "roe_pct":         round((info.get("returnOnEquity", 0) or 0) * 100, 2),
+                "debt_equity":     info.get("debtToEquity"),
+                "revenue_growth":  round((info.get("revenueGrowth",  0) or 0) * 100, 2),
+                "earnings_growth": round((info.get("earningsGrowth", 0) or 0) * 100, 2),
+                "52w_high":        info.get("fiftyTwoWeekHigh", 0),
+                "52w_low":         info.get("fiftyTwoWeekLow",  0),
+                "avg_volume":      info.get("averageVolume", 0),
+                "dividend_yield":  round((info.get("dividendYield", 0) or 0) * 100, 2),
+                "beta":            info.get("beta"),
+                "description":     (info.get("longBusinessSummary", "") or "")[:300],
+            }
+            cache.set(cache_key, result, ttl_seconds=3600)
+            return result
+        except Exception as e:
+            logger.warning(f"yfinance fundamentals for {sym_clean} failed: {e}")
+
+    return MOCK_DATA["fundamentals"].get(sym_clean, MOCK_DATA["fundamentals"]["RELIANCE"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IPO DATA
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_ipo_data() -> dict:
+    """Fetch current, upcoming, and listed IPOs from NSE. Cache: 1 hour."""
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    cached = cache.get("ipo_data")
+    if cached:
+        return cached
+
+    result = {"current": [], "upcoming": [], "listed": []}
+
+    if not _get_mock_mode():
+        from app.services.nse_session import nse
+        for status in ["current", "upcoming", "listed"]:
+            try:
+                data = await nse.get(f"ipo_{status}")
+                ipos = []
+                items = data if isinstance(data, list) else data.get("data", [])
+                for item in items[:8]:
+                    ipos.append({
+                        "company":            item.get("companyName", ""),
+                        "symbol":             item.get("symbol", ""),
+                        "open_date":          item.get("bidStartDt",    item.get("openDate", "")),
+                        "close_date":         item.get("bidEndDt",      item.get("closeDate", "")),
+                        "issue_price":        item.get("issuePrice",    item.get("cutOffPrice", "")),
+                        "lot_size":           item.get("lotSize", 0),
+                        "issue_size_cr":      item.get("issueSize", 0),
+                        "listing_date":       item.get("listingDate", ""),
+                        "listing_price":      item.get("listingPrice", None),
+                        "listing_gain_pct":   item.get("listingGain",  None),
+                        "subscription_times": item.get("totalSubscriptionTimes", None),
+                        "status":             status.upper(),
+                    })
+                result[status] = ipos
+            except Exception as e:
+                logger.warning(f"NSE IPO {status} failed: {e}")
+
+    if not any(result.values()):
+        result = MOCK_DATA["ipo_data"]
+
+    cache.set("ipo_data", result, ttl_seconds=3600)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTOR PERFORMANCE
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_sector_performance() -> list:
+    """
+    Calculate sector returns by averaging representative NSE stocks.
+    Cache: 1 hour.
+    """
+    from app.services.cache_service import cache
+    from app.demo_data import MOCK_DATA
+
+    cached = cache.get("sector_performance")
+    if cached:
+        return cached
+
+    SECTOR_STOCKS = {
+        "IT":      ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS"],
+        "Banking": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS", "KOTAKBANK.NS"],
+        "Pharma":  ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "APOLLOHOSP.NS"],
+        "Auto":    ["MARUTI.NS", "TATAMOTORS.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS", "HEROMOTOCO.NS"],
+        "FMCG":    ["HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS", "DABUR.NS"],
+        "Energy":  ["RELIANCE.NS", "ONGC.NS", "BPCL.NS", "IOC.NS", "POWERGRID.NS"],
+        "Metals":  ["TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "COALINDIA.NS", "VEDL.NS"],
+        "Realty":  ["DLF.NS", "GODREJPROP.NS", "PRESTIGE.NS", "OBEROIRLTY.NS"],
+        "Infra":   ["LT.NS", "ADANIPORTS.NS", "ADANIENT.NS", "SIEMENS.NS"],
+    }
+
+    if not _get_mock_mode():
+        try:
+            import yfinance as yf
+            all_syms = list({s for stocks in SECTOR_STOCKS.values() for s in stocks})
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(
+                None,
+                lambda: yf.download(
+                    all_syms, period="1mo", interval="1d",
+                    progress=False, threads=False, group_by="ticker",
+                )
+            )
+            sectors = []
+            for sector, syms in SECTOR_STOCKS.items():
+                r1d, r1w, r1m = [], [], []
+                for sym in syms:
+                    try:
+                        closes = data[sym]["Close"].dropna()
+                        if len(closes) >= 2:
+                            r1d.append((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100)
+                        if len(closes) >= 6:
+                            r1w.append((closes.iloc[-1] - closes.iloc[-6]) / closes.iloc[-6] * 100)
+                        if len(closes) >= 21:
+                            r1m.append((closes.iloc[-1] - closes.iloc[-21]) / closes.iloc[-21] * 100)
+                    except Exception:
+                        pass
+                sectors.append({
+                    "sector":        sector,
+                    "return_1d_pct": round(sum(r1d) / len(r1d), 2) if r1d else 0,
+                    "return_1w_pct": round(sum(r1w) / len(r1w), 2) if r1w else 0,
+                    "return_1m_pct": round(sum(r1m) / len(r1m), 2) if r1m else 0,
+                    "top_stock":     syms[0].replace(".NS", ""),
+                })
+            if sectors:
+                cache.set("sector_performance", sectors, ttl_seconds=3600)
+                return sectors
+        except Exception as e:
+            logger.warning(f"Sector performance failed: {e}")
+
+    result = MOCK_DATA["sector_performance"]
+    cache.set("sector_performance", result, ttl_seconds=3600)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MARKET OVERVIEW  (aggregated for /api/market/overview)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_market_overview() -> dict:
+    """
+    Aggregated market snapshot — calls all sub-functions, merges results.
+    All data is pre-warmed by APScheduler so this is typically cache-only.
+    """
+    indices, movers, fii_dii, sectors, ipos, status = await asyncio.gather(
+        get_index_quotes(),
+        get_top_movers(),
+        get_fii_dii_data(days=7),
+        get_sector_performance(),
+        get_ipo_data(),
+        get_market_status(),
+        return_exceptions=True,
+    )
+
+    def safe(val, default):
+        return default if isinstance(val, Exception) else val
+
+    indices = safe(indices, {})
+    movers  = safe(movers,  {"gainers": [], "losers": []})
+    fii_dii = safe(fii_dii, [])
+    sectors = safe(sectors, [])
+    ipos    = safe(ipos,    {"current": [], "upcoming": [], "listed": []})
+    status  = safe(status,  {"is_open": False, "status_text": "Unknown"})
+
+    gainers  = movers.get("gainers", [])
+    losers   = movers.get("losers",  [])
+    advances = sum(1 for s in gainers if float(s.get("change_pct", 0) or 0) > 0)
+    declines = sum(1 for s in losers  if float(s.get("change_pct", 0) or 0) < 0)
 
     return {
-        "nifty50": {"level": nifty, "change_pct": nifty_chg},
-        "sensex": {"level": sensex, "change_pct": sensex_chg},
-        "top_gainers": gainers,
-        "top_losers": losers,
-        "market_breadth": {"advances": advances, "declines": declines, "unchanged": unchanged},
-        "fii_net_today": round(random.uniform(-3000, 3000), 2),
-        "vix": round(random.uniform(12, 22), 2),
-        "sentiment": "BULLISH" if nifty_chg > 0.2 else ("BEARISH" if nifty_chg < -0.2 else "NEUTRAL"),
-        "timestamp": datetime.now().isoformat(),
+        "indices":            indices,
+        "top_gainers":        gainers[:5],
+        "top_losers":         losers[:5],
+        "fii_dii_7d":         fii_dii,
+        "sector_performance": sorted(sectors, key=lambda x: x.get("return_1d_pct", 0), reverse=True),
+        "ipo_pipeline": {
+            "current":  ipos.get("current",  [])[:3],
+            "upcoming": ipos.get("upcoming", [])[:3],
+            "listed":   ipos.get("listed",   [])[:5],
+        },
+        "market_status": status,
+        "breadth": {
+            "advances":  advances,
+            "declines":  declines,
+            "unchanged": max(0, 50 - advances - declines),
+        },
+        "generated_at": datetime.now(IST).isoformat(),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEWS  (kept for backward compat with existing endpoints)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_news(symbol: str) -> list:
+    """Fetch recent news for a stock. Falls back to mock headlines."""
+    from app.demo_data import MOCK_DATA
+    # Try corporate filings
+    sym_clean = symbol.upper().replace(".NS", "")
+    filings = await get_corporate_filings(days_back=7, symbol=sym_clean)
+    if filings:
+        return [{"title": f.get("headline", ""), "source": "BSE/NSE", "date": f.get("date", "")} for f in filings[:5]]
+    return [
+        {"title": f"Latest news for {sym_clean} unavailable in demo mode", "source": "ET Markets", "date": datetime.now(IST).strftime("%Y-%m-%d")},
+    ]

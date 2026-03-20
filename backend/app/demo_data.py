@@ -1,378 +1,334 @@
 """
-ET InvestorIQ — Demo Data
-Comprehensive mock dataset for offline demos and testing.
-Set MOCK_MODE=True in .env to use this data exclusively.
-Contains 30+ signals, 20+ patterns, IPOs, FII data, and portfolio examples.
+ET InvestorIQ — Mock / Demo Data
+Realistic January 2025 Indian market data used when MOCK_MODE=true or
+when live API calls fail. Every function in data_service.py uses this as fallback.
 """
 
-from datetime import datetime, timedelta
 import random
+import math
+from datetime import datetime, timedelta
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TODAY's date anchor for realistic relative dates
-# ─────────────────────────────────────────────────────────────────────────────
-TODAY = datetime(2026, 3, 19)
-
-
-def _d(days_ago: int) -> str:
-    return (TODAY - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MOCK SIGNALS (30+ items)
-# ─────────────────────────────────────────────────────────────────────────────
-DEMO_SIGNALS = [
-    {
-        "id": "sig001",
-        "symbol": "RELIANCE",
-        "company_name": "Reliance Industries Ltd",
-        "signal_type": "INSIDER_TRADE",
-        "headline": "Promoter Mukesh Ambani bought ₹4.2 Cr of Reliance 3 days before Q4 results",
-        "detail": "Mukesh Ambani (Promoter) purchased 14,400 shares of Reliance Industries at ₹2,920 "
-                  "per share (total ₹4.20 Cr) on March 16, 2026 — just 3 trading days before Q4 FY26 results. "
-                  "Post-transaction holding: 50.34%. This is the largest single promoter purchase in 18 months.",
-        "confidence_score": 0.91,
-        "signal_date": _d(3),
-        "stock_price_at_signal": 2920.0,
-        "expected_impact": "BULLISH",
-        "ai_analysis": ("Mukesh Ambani's buy of ₹4.2 Cr just 3 days before results is a textbook "
-                         "insider confidence signal. The timing is particularly notable because promoters "
-                         "are typically restricted from trading within 15 days of results under SEBI UPSI rules — "
-                         "this transaction occurred just outside the blackout window. "
-                         "Historically, when Reliance promoters have purchased before results, the stock has "
-                         "outperformed Nifty by 6-8% in the following 30 days. "
-                         "Watch for Q4 EBITDA beat and any announcement on the Jio Financial spin-off timeline."),
-        "data_sources": ["NSE Insider Trading Disclosure", "BSE Corporate Filings"],
-        "tags": ["insider", "promoter", "buy", "reliance", "pre-results", "high-conviction"],
-    },
-    {
-        "id": "sig002",
-        "symbol": "ADANIENT",
-        "company_name": "Adani Enterprises Ltd",
-        "signal_type": "PROMOTER_PLEDGE_CHANGE",
-        "headline": "Promoter pledge dropped 18% this quarter — historically bullish for this stock",
-        "detail": "Adani Group promoters reduced pledged shares by 8.2 Cr shares (18% reduction) in Q4 FY26. "
-                  "Pledged shareholding now at 12.4% vs 15.1% last quarter. "
-                  "The last two times this happened (Q2 FY24, Q1 FY25), ADANIENT rallied 22% and 18% respectively "
-                  "over the following 3 months.",
-        "confidence_score": 0.84,
-        "signal_date": _d(1),
-        "stock_price_at_signal": 3151.0,
-        "expected_impact": "BULLISH",
-        "ai_analysis": "Pledge reduction signals improved balance sheet health and promoter conviction.",
-        "data_sources": ["SEBI Pledge Disclosures", "NSE Shareholding Pattern"],
-        "tags": ["pledge", "adani", "promoter", "bullish", "balance-sheet"],
-    },
-    {
-        "id": "sig003",
-        "symbol": "TCS",
-        "company_name": "Tata Consultancy Services",
-        "signal_type": "BULK_DEAL",
-        "headline": "Mirae Asset MF accumulated ₹1,850 Cr of TCS in 3 consecutive days",
-        "detail": "Mirae Asset Mutual Fund executed bulk purchase of TCS shares across 3 consecutive trading days: "
-                  "₹620 Cr (March 17), ₹680 Cr (March 18), ₹550 Cr (March 19). Total: ₹1,850 Cr. "
-                  "This is the largest single-week institutional accumulation in TCS since Q4 2023. "
-                  "Price barely moved (+0.8%), suggesting quiet accumulation before a re-rating event.",
-        "confidence_score": 0.87,
-        "signal_date": _d(0),
-        "stock_price_at_signal": 4112.0,
-        "expected_impact": "BULLISH",
-        "ai_analysis": "Institutional accumulation with minimal price impact suggests controlled buying.",
-        "data_sources": ["NSE Bulk Deals", "BSE Block Deals"],
-        "tags": ["bulk_deal", "institutional", "tcs", "mirae", "accumulation"],
-    },
-    {
-        "id": "sig004",
-        "symbol": "ITC",
-        "company_name": "ITC Ltd",
-        "signal_type": "CORPORATE_ACTION",
-        "headline": "Board approves ₹18,000 Cr buyback at ₹530 — 17% premium to CMP",
-        "detail": "ITC's board of directors has announced a share buyback of ₹18,000 Crores at ₹530 per share "
-                  "(₹452.50 current price — 17.1% premium). This is ITC's largest-ever buyback. "
-                  "Buyback opens: April 10, 2026. Record date: April 2, 2026. "
-                  "At ₹530, the buyback represents 1.8% of total shares. "
-                  "Post-buyback, EPS is expected to increase by ₹1.8 (8% accretion).",
-        "confidence_score": 0.92,
-        "signal_date": _d(2),
-        "stock_price_at_signal": 452.5,
-        "expected_impact": "BULLISH",
-        "ai_analysis": "Buyback at 17% premium is classic catalyst for short-term 10-15% upside.",
-        "data_sources": ["BSE Announcement", "NSE Corporation Action"],
-        "tags": ["buyback", "itc", "corporate_action", "premium", "fmcg"],
-    },
-    {
-        "id": "sig005",
-        "symbol": "HDFCBANK",
-        "company_name": "HDFC Bank Ltd",
-        "signal_type": "EARNINGS_SURPRISE",
-        "headline": "HDFC Bank Q4 FY26: NII at ₹29,200 Cr — beats estimate by ₹1,800 Cr",
-        "detail": "HDFC Bank reported Q4 FY26 Net Interest Income of ₹29,200 Cr, beating Bloomberg consensus "
-                  "estimate of ₹27,400 Cr by 6.6%. PAT: ₹15,850 Cr (consensus: ₹14,900 Cr). "
-                  "NIM improved to 3.65% from 3.45% last quarter. Gross NPA improved to 1.24% from 1.28%. "
-                  "Casa ratio: 44.1%. Advances growth: 19.2% YoY.",
-        "confidence_score": 0.88,
-        "signal_date": _d(5),
-        "stock_price_at_signal": 1648.0,
-        "expected_impact": "BULLISH",
-        "ai_analysis": "Earnings beat of 6.6% on NII with NIM expansion is a strong rerating signal.",
-        "data_sources": ["BSE Quarterly Results", "Investor Presentation"],
-        "tags": ["earnings", "hdfcbank", "beat", "nii", "banking"],
-    },
-    {
-        "id": "sig006",
-        "symbol": "BAJFINANCE",
-        "company_name": "Bajaj Finance Ltd",
-        "signal_type": "CORPORATE_ACTION",
-        "headline": "Bajaj Finance 1:1 bonus issue — effective April 15, 2026",
-        "detail": "Bajaj Finance's board has approved a 1:1 bonus issue, effective record date April 15, 2026. "
-                  "Shareholders will receive 1 additional share for every share held. "
-                  "Post-bonus, the face value remains ₹2. Share price will adjust to ~₹3,600 from ₹7,215. "
-                  "Retail participation typically surges post-bonus due to improved affordability.",
-        "confidence_score": 0.79,
-        "signal_date": _d(4),
-        "stock_price_at_signal": 7215.0,
-        "expected_impact": "BULLISH",
-        "ai_analysis": "Bonus issues improve retail accessibility and signal promoter confidence.",
-        "data_sources": ["BSE Corporate Action", "NSE Announcement"],
-        "tags": ["bonus", "bajfinance", "corporate_action", "retail", "nbfc"],
-    },
-    {
-        "id": "sig007",
-        "symbol": "NIFTY",
-        "company_name": "NSE Nifty 50 Index",
-        "signal_type": "FII_ACCUMULATION",
-        "headline": "FII 7-day buying streak: ₹28,500 Cr net inflow — strongest since Nov 2024",
-        "detail": "Foreign Institutional Investors have been net buyers for 7 consecutive trading days "
-                  "with cumulative inflow of ₹28,500 Cr (₹4,071 Cr/day average). "
-                  "Meanwhile, DIIs have been net sellers of ₹12,200 Cr during the same period. "
-                  "EM flows tracker shows India receiving 38% of all EM allocation in the past 2 weeks. "
-                  "The last time this happened (Nov 2024), Nifty rallied 8% over the following 6 weeks.",
-        "confidence_score": 0.82,
-        "signal_date": _d(0),
-        "stock_price_at_signal": 22350.0,
-        "expected_impact": "BULLISH",
-        "ai_analysis": "7-day FII streak with ₹28,500 Cr inflow is a strong macro bullish indicator.",
-        "data_sources": ["NSE FII/DII Data", "SEBI Institutional Data"],
-        "tags": ["fii", "accumulation", "streak", "macro", "nifty", "bullish"],
-    },
-    {
-        "id": "sig008",
-        "symbol": "SUNPHARMA",
-        "company_name": "Sun Pharmaceutical Industries",
-        "signal_type": "FILING",
-        "headline": "USFDA EIR received for Halol facility — clears cloud over 35% of US revenue",
-        "detail": "Sun Pharma received the Establishment Inspection Report (EIR) from USFDA for its "
-                  "Halol manufacturing facility on March 18, 2026. The EIR indicates satisfactory resolution "
-                  "of all previously cited observations. The Halol facility contributes approximately "
-                  "35% of Sun Pharma's US revenues (~$800M annually). "
-                  "This removes a key regulatory overhang that has weighed on the stock for 14 months.",
-        "confidence_score": 0.85,
-        "signal_date": _d(1),
-        "stock_price_at_signal": 1782.0,
-        "expected_impact": "BULLISH",
-        "ai_analysis": "USFDA EIR for Halol removes 14-month overhang. Expect analyst upgrades.",
-        "data_sources": ["BSE Filing", "USFDA Database"],
-        "tags": ["pharma", "usfda", "regulatory", "sunpharma", "eir", "bullish"],
-    },
-    {
-        "id": "sig009",
-        "symbol": "COALINDIA",
-        "company_name": "Coal India Ltd",
-        "signal_type": "FILING",
-        "headline": "Auditor notes concerns on inventory valuation methodology — review risk flag",
-        "detail": "Coal India's statutory auditor has noted concerns in the Q4 FY26 audit report regarding "
-                  "the valuation methodology for coal inventory (₹3,200 Cr impact potential). "
-                  "The auditor has requested management clarification within 45 days. "
-                  "While not a qualification, this is a caution flag that may delay the annual results sign-off. "
-                  "Government ownership at 66.1% limits downside, but uncertainty may cap near-term upside.",
-        "confidence_score": 0.72,
-        "signal_date": _d(3),
-        "stock_price_at_signal": 485.0,
-        "expected_impact": "BEARISH",
-        "ai_analysis": "Auditor concerns on ₹3,200 Cr inventory creates near-term uncertainty.",
-        "data_sources": ["BSE Filing", "Annual Report"],
-        "tags": ["coal", "auditor", "risk", "bearish", "accounting"],
-    },
-    {
-        "id": "sig010",
-        "symbol": "TATAMOTORS",
-        "company_name": "Tata Motors Ltd",
-        "signal_type": "FILING",
-        "headline": "EV sales cross 1 lakh cumulative units in FY26 — 6 months ahead of target",
-        "detail": "Tata Motors announced EV sales milestone: cumulative 1,00,000 units sold in FY26, "
-                  "achieving guidance 6 months earlier than projected. "
-                  "Market share in passenger EV: 61.2%. "
-                  "Nexon EV remains #1 with 58,000 units; Punch EV at 32,000 units. "
-                  "Management has upgraded FY27 EV volume guidance from 2.5L to 3.2L units.",
-        "confidence_score": 0.80,
-        "signal_date": _d(2),
-        "stock_price_at_signal": 962.0,
-        "expected_impact": "BULLISH",
-        "ai_analysis": "EV milestone 6 months early triggers guidance upgrade cycle.",
-        "data_sources": ["BSE Announcement", "Monthly Auto Sales Data"],
-        "tags": ["ev", "tatamotors", "sales", "guidance", "auto", "bullish"],
-    },
-]
+def _sparkline(base: float, direction: int = 1, points: int = 20) -> list:
+    """Generate a realistic-looking sparkline (% change from open)."""
+    vals = [0.0]
+    for _ in range(points - 1):
+        step = random.gauss(0, 0.15) + direction * 0.04
+        vals.append(round(vals[-1] + step, 3))
+    return vals
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DEMO PATTERNS (20+ items)
-# ─────────────────────────────────────────────────────────────────────────────
-DEMO_PATTERNS = [
-    {
-        "symbol": "RELIANCE.NS",
-        "pattern_type": "GOLDEN_CROSS",
-        "detected_at": _d(1),
-        "confidence": 0.82,
-        "direction": "BULLISH",
-        "key_levels": {"support": 2820, "resistance": 3024, "target": 3200, "stop_loss": 2780},
-        "indicators": {"EMA50": 2895, "EMA200": 2845, "ADX": 28.5, "RSI": 58.2},
-        "pattern_label": "Golden Cross (EMA50 > EMA200)",
-        "backtest_stats": {"win_rate": 71, "avg_return_pct": 14.2, "avg_holding_days": 48, "sample_size": 8},
-    },
-    {
-        "symbol": "TCS.NS",
-        "pattern_type": "RSI_DIVERGENCE",
-        "detected_at": _d(0),
-        "confidence": 0.74,
-        "direction": "BULLISH",
-        "key_levels": {"support": 3950, "target": 4400, "stop_loss": 3900},
-        "indicators": {"RSI": 38.5, "RSI_prev": 31.2},
-        "pattern_label": "RSI Bullish Divergence",
-        "backtest_stats": {"win_rate": 64, "avg_return_pct": 9.8, "avg_holding_days": 22, "sample_size": 12},
-    },
-    {
-        "symbol": "HDFCBANK.NS",
-        "pattern_type": "BREAKOUT",
-        "detected_at": _d(0),
-        "confidence": 0.78,
-        "direction": "BULLISH",
-        "key_levels": {"breakout_level": 1780, "target": 1950, "stop_loss": 1720},
-        "indicators": {"volume_ratio": 2.1, "52w_high": 1780},
-        "pattern_label": "52-Week High Breakout",
-        "backtest_stats": {"win_rate": 67, "avg_return_pct": 12.4, "avg_holding_days": 28, "sample_size": 6},
-    },
-    {
-        "symbol": "INFY.NS",
-        "pattern_type": "MACD_CROSSOVER",
-        "detected_at": _d(2),
-        "confidence": 0.68,
-        "direction": "BULLISH",
-        "key_levels": {"target": 1950, "stop_loss": 1700},
-        "indicators": {"MACD": 8.5, "MACD_signal": 5.2, "MACD_hist": 3.3},
-        "pattern_label": "MACD Bullish Crossover",
-        "backtest_stats": {"win_rate": 60, "avg_return_pct": 8.2, "avg_holding_days": 18, "sample_size": 15},
-    },
-    {
-        "symbol": "ICICIBANK.NS",
-        "pattern_type": "SUPPORT_BOUNCE",
-        "detected_at": _d(1),
-        "confidence": 0.71,
-        "direction": "BULLISH",
-        "key_levels": {"support": 1090, "target": 1250, "stop_loss": 1060},
-        "indicators": {"RSI": 29.8, "BB_lower": 1092},
-        "pattern_label": "Bollinger Band Bounce",
-        "backtest_stats": {"win_rate": 63, "avg_return_pct": 7.5, "avg_holding_days": 14, "sample_size": 11},
-    },
-    {
-        "symbol": "BAJFINANCE.NS",
-        "pattern_type": "BULLISH_ENGULFING",
-        "detected_at": _d(0),
-        "confidence": 0.66,
-        "direction": "BULLISH",
-        "key_levels": {"support": 7050, "target": 7500, "stop_loss": 6980},
-        "indicators": {"engulfing_ratio": 1.8},
-        "pattern_label": "Bullish Engulfing Candle",
-        "backtest_stats": {"win_rate": 61, "avg_return_pct": 5.8, "avg_holding_days": 8, "sample_size": 18},
-    },
-    {
-        "symbol": "TATASTEEL.NS",
-        "pattern_type": "DEATH_CROSS",
-        "detected_at": _d(4),
-        "confidence": 0.73,
-        "direction": "BEARISH",
-        "key_levels": {"support": 130, "resistance": 160, "target": 138, "stop_loss": 165},
-        "indicators": {"EMA50": 148, "EMA200": 153, "ADX": 31.2, "RSI": 42.5},
-        "pattern_label": "Death Cross (EMA50 < EMA200)",
-        "backtest_stats": {"win_rate": 62, "avg_return_pct": -9.5, "avg_holding_days": 38, "sample_size": 7},
-    },
-    {
-        "symbol": "NESTLEIND.NS",
-        "pattern_type": "RSI_OVERBOUGHT",
-        "detected_at": _d(0),
-        "confidence": 0.64,
-        "direction": "BEARISH",
-        "key_levels": {"resistance": 25200, "target": 23500, "stop_loss": 25500},
-        "indicators": {"RSI": 74.2},
-        "pattern_label": "RSI Overbought (>70)",
-        "backtest_stats": {"win_rate": 57, "avg_return_pct": -5.8, "avg_holding_days": 15, "sample_size": 9},
-    },
-]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DEMO FII/DII DATA (30 days)
-# ─────────────────────────────────────────────────────────────────────────────
-DEMO_FII_DII = []
-import random as _rnd
-_rnd.seed(42)
-for i in range(30):
-    d = TODAY - timedelta(days=30 - i)
-    if d.weekday() < 5:
-        fii = round(_rnd.uniform(-2500, 4000), 2)
-        dii = round(-fii * _rnd.uniform(0.5, 1.1) + _rnd.uniform(-500, 500), 2)
-        fii_buy = round(abs(fii) + _rnd.uniform(1000, 6000), 2)
-        dii_buy = round(abs(dii) + _rnd.uniform(800, 5000), 2)
-        DEMO_FII_DII.append({
-            "date": d.strftime("%Y-%m-%d"),
-            "fii_buy": fii_buy, "fii_sell": round(fii_buy - fii, 2), "fii_net": fii,
-            "dii_buy": dii_buy, "dii_sell": round(dii_buy - dii, 2), "dii_net": dii,
+def _ohlcv_series(start_price: float, days: int = 252,
+                  trend: float = 0.0003, vol: float = 0.015) -> list:
+    """Generate synthetic OHLCV data with realistic price action."""
+    price = start_price
+    rows = []
+    base_date = datetime(2024, 3, 15)
+    for i in range(days):
+        dt = base_date + timedelta(days=i)
+        # Skip weekends
+        if dt.weekday() >= 5:
+            continue
+        daily_ret = random.gauss(trend, vol)
+        open_  = round(price * (1 + random.gauss(0, 0.003)), 2)
+        close  = round(open_ * (1 + daily_ret), 2)
+        high   = round(max(open_, close) * (1 + abs(random.gauss(0, 0.005))), 2)
+        low    = round(min(open_, close) * (1 - abs(random.gauss(0, 0.005))), 2)
+        volume = int(random.gauss(5_000_000, 1_500_000) * (1 + abs(daily_ret) * 10))
+        rows.append({
+            "date": dt.strftime("%Y-%m-%d"),
+            "open": open_, "high": high, "low": low, "close": close,
+            "volume": max(100_000, volume),
         })
+        price = close
+    return rows
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DEMO PORTFOLIO EXAMPLES
-# ─────────────────────────────────────────────────────────────────────────────
-DEMO_PORTFOLIOS = [
-    {
-        "name": "Balanced Large-Cap",
-        "risk_profile": "MODERATE",
-        "holdings": [
-            {"symbol": "RELIANCE", "quantity": 50, "avg_cost": 2650, "current_price": 2920},
-            {"symbol": "TCS", "quantity": 30, "avg_cost": 3800, "current_price": 4112},
-            {"symbol": "HDFCBANK", "quantity": 100, "avg_cost": 1580, "current_price": 1648},
-            {"symbol": "INFY", "quantity": 80, "avg_cost": 1600, "current_price": 1782},
-            {"symbol": "ICICIBANK", "quantity": 120, "avg_cost": 950, "current_price": 1185},
-        ]
+
+# ─── MOCK DATA ────────────────────────────────────────────────────────────────
+
+MOCK_DATA = {
+
+    # ── Index quotes ────────────────────────────────────────────────────────
+    "index_quotes": {
+        "nifty50": {
+            "name": "NIFTY 50", "value": 23456.80, "change": 124.50,
+            "change_pct": 0.53, "high": 23512.35, "low": 23380.10,
+            "sparkline": _sparkline(23456, direction=1),
+        },
+        "sensex": {
+            "name": "SENSEX", "value": 77145.20, "change": 415.30,
+            "change_pct": 0.54, "high": 77290.00, "low": 76880.50,
+            "sparkline": _sparkline(77145, direction=1),
+        },
+        "banknifty": {
+            "name": "BANK NIFTY", "value": 49234.50, "change": -123.40,
+            "change_pct": -0.25, "high": 49420.00, "low": 49110.00,
+            "sparkline": _sparkline(49234, direction=-1),
+        },
+        "vix": {
+            "name": "INDIA VIX", "value": 13.42, "change": 0.21,
+            "change_pct": 1.59, "high": 13.88, "low": 13.15,
+            "sparkline": _sparkline(13.42, direction=0),
+        },
     },
-    {
-        "name": "Growth Focused",
-        "risk_profile": "AGGRESSIVE",
-        "holdings": [
-            {"symbol": "BAJFINANCE", "quantity": 20, "avg_cost": 6800, "current_price": 7215},
-            {"symbol": "ADANIENT", "quantity": 40, "avg_cost": 2800, "current_price": 3151},
-            {"symbol": "TATAMOTORS", "quantity": 150, "avg_cost": 800, "current_price": 962},
-            {"symbol": "TITAN", "quantity": 45, "avg_cost": 3200, "current_price": 3610},
-        ]
+
+    # ── Top movers ──────────────────────────────────────────────────────────
+    "top_movers": {
+        "gainers": [
+            {"symbol": "HDFCBANK",  "company": "HDFC Bank Ltd",              "ltp": 1648.25, "change_pct": 3.12, "volume": 12_400_000},
+            {"symbol": "WIPRO",     "company": "Wipro Ltd",                  "ltp": 487.50,  "change_pct": 2.87, "volume": 8_200_000},
+            {"symbol": "ADANIENT",  "company": "Adani Enterprises Ltd",      "ltp": 2436.10, "change_pct": 2.54, "volume": 4_500_000},
+            {"symbol": "BAJFINANCE","company": "Bajaj Finance Ltd",           "ltp": 6984.30, "change_pct": 2.31, "volume": 2_100_000},
+            {"symbol": "TATAMOTORS","company": "Tata Motors Ltd",             "ltp": 876.45,  "change_pct": 2.18, "volume": 15_600_000},
+            {"symbol": "SUNPHARMA", "company": "Sun Pharmaceutical Ind Ltd", "ltp": 1654.80, "change_pct": 1.95, "volume": 3_400_000},
+            {"symbol": "LT",        "company": "Larsen & Toubro Ltd",        "ltp": 3547.20, "change_pct": 1.78, "volume": 2_800_000},
+            {"symbol": "TITAN",     "company": "Titan Company Ltd",           "ltp": 3254.90, "change_pct": 1.62, "volume": 1_900_000},
+            {"symbol": "NTPC",      "company": "NTPC Ltd",                   "ltp": 348.75,  "change_pct": 1.51, "volume": 22_100_000},
+            {"symbol": "POWERGRID", "company": "Power Grid Corp of India",   "ltp": 298.60,  "change_pct": 1.44, "volume": 11_300_000},
+        ],
+        "losers": [
+            {"symbol": "INFY",      "company": "Infosys Ltd",                "ltp": 1385.40, "change_pct": -2.45, "volume": 9_800_000},
+            {"symbol": "ITC",       "company": "ITC Ltd",                    "ltp": 432.15,  "change_pct": -1.98, "volume": 28_500_000},
+            {"symbol": "TCS",       "company": "Tata Consultancy Svcs Ltd",  "ltp": 4128.60, "change_pct": -1.72, "volume": 3_200_000},
+            {"symbol": "ONGC",      "company": "Oil & Natural Gas Corp Ltd", "ltp": 214.30,  "change_pct": -1.58, "volume": 18_700_000},
+            {"symbol": "COALINDIA", "company": "Coal India Ltd",             "ltp": 387.25,  "change_pct": -1.42, "volume": 12_300_000},
+            {"symbol": "BPCL",      "company": "BPCL Ltd",                   "ltp": 312.45,  "change_pct": -1.31, "volume": 9_100_000},
+            {"symbol": "IOC",       "company": "Indian Oil Corp Ltd",        "ltp": 142.80,  "change_pct": -1.19, "volume": 35_400_000},
+            {"symbol": "JSWSTEEL",  "company": "JSW Steel Ltd",              "ltp": 812.30,  "change_pct": -1.08, "volume": 5_600_000},
+            {"symbol": "SBIN",      "company": "State Bank of India",        "ltp": 762.40,  "change_pct": -0.95, "volume": 24_200_000},
+            {"symbol": "HINDALCO",  "company": "Hindalco Industries Ltd",    "ltp": 578.90,  "change_pct": -0.84, "volume": 7_800_000},
+        ],
     },
-]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper function to get demo data
-# ─────────────────────────────────────────────────────────────────────────────
+    # ── FII / DII data (last 30 days in ₹ Cr) ─────────────────────────────
+    "fii_dii_data": [
+        {
+            "date": (datetime(2025, 1, 20) - timedelta(days=i)).strftime("%d-%b-%Y"),
+            "fii_buy":  round(random.uniform(8000, 18000), 2),
+            "fii_sell": round(random.uniform(7000, 17000), 2),
+            "fii_net":  round(random.gauss(500, 2500), 2),
+            "dii_buy":  round(random.uniform(6000, 12000), 2),
+            "dii_sell": round(random.uniform(5000, 10000), 2),
+            "dii_net":  round(random.gauss(1200, 1800), 2),
+        }
+        for i in range(30)
+    ],
 
-def get_demo_signals():
-    """Return all demo signals."""
-    return DEMO_SIGNALS
+    # ── Bulk deals ──────────────────────────────────────────────────────────
+    "bulk_deals": [
+        {"symbol": "HDFCBANK",  "client_name": "Mirae Asset Mutual Fund",      "buy_sell": "BUY",  "quantity": 5_000_000, "price": 1712.40, "value_cr": 856.20,  "date": "17-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "INFY",      "client_name": "SBI Mutual Fund",              "buy_sell": "SELL", "quantity": 3_000_000, "price": 1418.50, "value_cr": 425.55,  "date": "17-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "RELIANCE",  "client_name": "HDFC Mutual Fund",             "buy_sell": "BUY",  "quantity": 2_500_000, "price": 2934.55, "value_cr": 733.64,  "date": "16-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "TCS",       "client_name": "Nippon India Mutual Fund",     "buy_sell": "BUY",  "quantity": 800_000,   "price": 4156.80, "value_cr": 332.54,  "date": "16-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "BAJFINANCE","client_name": "Axis Mutual Fund",             "buy_sell": "BUY",  "quantity": 600_000,   "price": 6984.30, "value_cr": 419.06,  "date": "15-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "WIPRO",     "client_name": "Goldman Sachs (Mauritius)",    "buy_sell": "SELL", "quantity": 4_200_000, "price": 487.50,  "value_cr": 204.75,  "date": "15-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "ADANIENT",  "client_name": "Franklin Templeton MF",        "buy_sell": "BUY",  "quantity": 1_200_000, "price": 2436.10, "value_cr": 292.33,  "date": "14-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "ICICIBANK", "client_name": "ICICI Prudential Mutual Fund", "buy_sell": "BUY",  "quantity": 3_500_000, "price": 1224.30, "value_cr": 428.51,  "date": "14-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "SBIN",      "client_name": "Life Insurance Corp of India", "buy_sell": "BUY",  "quantity": 8_000_000, "price": 762.40,  "value_cr": 609.92,  "date": "13-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "LT",        "client_name": "DSP Mutual Fund",              "buy_sell": "SELL", "quantity": 900_000,   "price": 3547.20, "value_cr": 319.25,  "date": "13-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "TATAMOTORS","client_name": "Avendus Capital Pte Ltd",      "buy_sell": "BUY",  "quantity": 6_000_000, "price": 876.45,  "value_cr": 525.87,  "date": "10-Jan-2025", "deal_type": "BULK"},
+        {"symbol": "SUNPHARMA", "client_name": "Kotak Mahindra MF",            "buy_sell": "BUY",  "quantity": 1_500_000, "price": 1654.80, "value_cr": 248.22,  "date": "10-Jan-2025", "deal_type": "BULK"},
+    ],
 
+    # ── Block deals ─────────────────────────────────────────────────────────
+    "block_deals": [
+        {"symbol": "ZOMATO",    "client_name": "Morgan Stanley Asia",          "buy_sell": "BUY",  "quantity": 25_000_000, "price": 234.50,  "value_cr": 586.25,  "date": "17-Jan-2025", "deal_type": "BLOCK"},
+        {"symbol": "PAYTM",     "client_name": "Antfin Netherlands Holding",   "buy_sell": "SELL", "quantity": 18_000_000, "price": 812.30,  "value_cr": 1462.14, "date": "16-Jan-2025", "deal_type": "BLOCK"},
+        {"symbol": "NYKAA",     "client_name": "TPG Growth IV SF Pte Ltd",     "buy_sell": "SELL", "quantity": 12_000_000, "price": 187.60,  "value_cr": 225.12,  "date": "15-Jan-2025", "deal_type": "BLOCK"},
+        {"symbol": "DELHIVERY", "client_name": "SoftBank Vision Fund",         "buy_sell": "SELL", "quantity": 8_500_000,  "price": 364.80,  "value_cr": 310.08,  "date": "14-Jan-2025", "deal_type": "BLOCK"},
+        {"symbol": "IRCTC",     "client_name": "Govt of India (Divestment)",   "buy_sell": "SELL", "quantity": 5_000_000,  "price": 786.40,  "value_cr": 393.20,  "date": "13-Jan-2025", "deal_type": "BLOCK"},
+        {"symbol": "HAL",       "client_name": "Govt of India (Divestment)",   "buy_sell": "SELL", "quantity": 2_000_000,  "price": 4218.60, "value_cr": 843.72,  "date": "10-Jan-2025", "deal_type": "BLOCK"},
+        {"symbol": "PERSISTENT","client_name": "Nomura Singapore Ltd",         "buy_sell": "BUY",  "quantity": 1_200_000,  "price": 5634.20, "value_cr": 676.10,  "date": "10-Jan-2025", "deal_type": "BLOCK"},
+        {"symbol": "TRENT",     "client_name": "GQG Partners LLC",             "buy_sell": "BUY",  "quantity": 3_000_000,  "price": 4876.50, "value_cr": 1462.95, "date": "09-Jan-2025", "deal_type": "BLOCK"},
+    ],
 
-def get_demo_patterns():
-    """Return all demo patterns."""
-    return DEMO_PATTERNS
+    # ── Insider trades ──────────────────────────────────────────────────────
+    "insider_trades": [
+        {"symbol": "BAJAJFINSV", "person_name": "Bajaj Finserv Ltd (Promoter)", "category": "Promoter",         "trade_type": "BUY",  "quantity": 450_000,   "value_cr": 78.42,  "date": "17-Jan-2025", "pre_holding_pct": 60.78, "post_holding_pct": 60.82, "mode": "Market Purchase"},
+        {"symbol": "SUNPHARMA",  "person_name": "Dilip S Shanghvi",              "category": "Promoter",         "trade_type": "BUY",  "quantity": 2_000_000, "value_cr": 330.96, "date": "16-Jan-2025", "pre_holding_pct": 54.48, "post_holding_pct": 54.52, "mode": "Market Purchase"},
+        {"symbol": "PERSISTENT", "person_name": "Dr Anand Deshpande",            "category": "Promoter",         "trade_type": "BUY",  "quantity": 50_000,    "value_cr": 28.17,  "date": "15-Jan-2025", "pre_holding_pct": 30.81, "post_holding_pct": 30.82, "mode": "Market Purchase"},
+        {"symbol": "INFY",       "person_name": "Salil S Parekh",                "category": "Key Managerial",   "trade_type": "SELL", "quantity": 300_000,   "value_cr": 42.56,  "date": "15-Jan-2025", "pre_holding_pct": 0.31,  "post_holding_pct": 0.28,  "mode": "ESOP Exercise"},
+        {"symbol": "HDFCBANK",   "person_name": "Sashidhar Jagdishan",           "category": "Key Managerial",   "trade_type": "SELL", "quantity": 120_000,   "value_cr": 20.55,  "date": "14-Jan-2025", "pre_holding_pct": 0.08,  "post_holding_pct": 0.07,  "mode": "ESOP Exercise"},
+        {"symbol": "ZOMATO",     "person_name": "Deepinder Goyal",               "category": "Promoter",         "trade_type": "BUY",  "quantity": 5_000_000, "value_cr": 117.25, "date": "13-Jan-2025", "pre_holding_pct": 4.12,  "post_holding_pct": 4.16,  "mode": "Market Purchase"},
+        {"symbol": "WHIRLPOOL",  "person_name": "Whirlpool Corp USA",            "category": "Promoter",         "trade_type": "SELL", "quantity": 8_000_000, "value_cr": 152.00, "date": "13-Jan-2025", "pre_holding_pct": 51.00, "post_holding_pct": 48.00, "mode": "Off-Market"},
+        {"symbol": "IRCTC",      "person_name": "President of India",            "category": "Promoter (Govt)",  "trade_type": "SELL", "quantity": 5_000_000, "value_cr": 393.20, "date": "10-Jan-2025", "pre_holding_pct": 67.46, "post_holding_pct": 67.08, "mode": "OFS"},
+        {"symbol": "COFORGE",    "person_name": "Baring Private Equity Asia",    "category": "Institutional",    "trade_type": "SELL", "quantity": 1_500_000, "value_cr": 108.15, "date": "10-Jan-2025", "pre_holding_pct": 12.28, "post_holding_pct": 11.16, "mode": "Block Deal"},
+        {"symbol": "TATATECH",   "person_name": "Tata Motors Ltd",               "category": "Promoter",         "trade_type": "BUY",  "quantity": 10_000_000,"value_cr": 112.80, "date": "09-Jan-2025", "pre_holding_pct": 46.42, "post_holding_pct": 46.72, "mode": "Market Purchase"},
+    ],
 
+    # ── Corporate filings ───────────────────────────────────────────────────
+    "corporate_filings": [
+        {"symbol": "RELIANCE",  "company": "Reliance Industries Ltd",          "category": "Financial Results",  "headline": "Q3FY25 Net Profit ₹18,540 Cr, Revenue ₹2.31 Lakh Cr",               "date": "17-Jan-2025", "subject": "Q3FY25 Financial Results"},
+        {"symbol": "TCS",       "company": "Tata Consultancy Services Ltd",    "category": "Financial Results",  "headline": "Q3FY25 PAT ₹12,380 Cr (+5.4% YoY), Revenue $7.56B",                 "date": "16-Jan-2025", "subject": "Q3FY25 Financial Results"},
+        {"symbol": "INFY",      "company": "Infosys Ltd",                      "category": "Financial Results",  "headline": "Q3FY25 PAT ₹6,806 Cr, Revenue Guidance Upgraded to 4.5-5%",        "date": "16-Jan-2025", "subject": "Q3FY25 Results and Guidance Update"},
+        {"symbol": "ADANIENT",  "company": "Adani Enterprises Ltd",            "category": "Acquisition",        "headline": "Enters AI Data Centre Business; JV with Google Cloud",               "date": "15-Jan-2025", "subject": "Joint Venture Announcement"},
+        {"symbol": "HDFCBANK",  "company": "HDFC Bank Ltd",                    "category": "Board Meeting",      "headline": "Dividend of ₹19 Per Share Declared for Q3FY25",                     "date": "15-Jan-2025", "subject": "Dividend Declaration"},
+        {"symbol": "TCS",       "company": "Tata Consultancy Services Ltd",    "category": "Insider Trading",    "headline": "Director Milind Lakkad Sells 50,000 Shares via ESOP",               "date": "14-Jan-2025", "subject": "Insider Trading Disclosure"},
+        {"symbol": "HAL",       "company": "Hindustan Aeronautics Ltd",        "category": "Acquisition",        "headline": "₹21,935 Cr Order from Ministry of Defence for 12 Sukhoi Jets",      "date": "14-Jan-2025", "subject": "Major Order Win"},
+        {"symbol": "LTIM",      "company": "LTIMindtree Ltd",                  "category": "Financial Results",  "headline": "Q3FY25 PAT ₹1,164 Cr (+7.8%), Strong Deal Wins in BFSI",           "date": "13-Jan-2025", "subject": "Q3FY25 Financial Results"},
+        {"symbol": "ZOMATO",    "company": "Zomato Ltd",                       "category": "Board Meeting",      "headline": "Board Approves QIP to Raise ₹8,500 Cr at ₹250/share",             "date": "13-Jan-2025", "subject": "QIP Announcement"},
+        {"symbol": "BAJFINANCE","company": "Bajaj Finance Ltd",                "category": "Regulatory",         "headline": "RBI Removes Restrictions on eCOM and Insta EMI Card Products",      "date": "10-Jan-2025", "subject": "Regulatory Update"},
+        {"symbol": "RVNL",      "company": "Rail Vikas Nigam Ltd",             "category": "Acquisition",        "headline": "₹4,200 Cr Contract from Railways for Electrification Projects",     "date": "10-Jan-2025", "subject": "Order Win"},
+        {"symbol": "WIPRO",     "company": "Wipro Ltd",                        "category": "Financial Results",  "headline": "Q3FY25 IT Services Revenue $2.63B; US Market Recovery Seen",        "date": "10-Jan-2025", "subject": "Q3FY25 Financial Results"},
+        {"symbol": "NYKAA",     "company": "FSN E-Commerce Ventures Ltd",      "category": "Board Meeting",      "headline": "Bonus Issue 5:1 Approved; Record Date Feb 14, 2025",                "date": "09-Jan-2025", "subject": "Bonus Share Announcement"},
+        {"symbol": "TATASTEEL", "company": "Tata Steel Ltd",                   "category": "Regulatory",         "headline": "UK Govt Approves £500M Grant for Port Talbot Green Steel Project",  "date": "09-Jan-2025", "subject": "Regulatory Approval"},
+        {"symbol": "IRFC",      "company": "Indian Railway Finance Corp Ltd",  "category": "Financial Results",  "headline": "Q3FY25 PAT ₹1,629 Cr (+4.1% YoY), Loan Book Expands 15%",          "date": "08-Jan-2025", "subject": "Q3FY25 Financial Results"},
+    ],
 
-def get_demo_fii_data():
-    """Return demo FII/DII data."""
-    return DEMO_FII_DII
+    # ── IPO data ────────────────────────────────────────────────────────────
+    "ipo_data": {
+        "current": [
+            {
+                "company": "Denta Water and Infra Solutions Ltd", "symbol": "DENTAWATER",
+                "open_date": "22-Jan-2025", "close_date": "24-Jan-2025",
+                "issue_price": "279-294", "lot_size": 50, "issue_size_cr": 195.90,
+                "status": "CURRENT", "subscription_times": None, "listing_date": None,
+            },
+            {
+                "company": "Sat Kartar Shopping Ltd", "symbol": "SATKARSHO",
+                "open_date": "22-Jan-2025", "close_date": "24-Jan-2025",
+                "issue_price": "96-101",   "lot_size": 1200, "issue_size_cr": 54.60,
+                "status": "CURRENT", "subscription_times": None, "listing_date": None,
+            },
+        ],
+        "upcoming": [
+            {
+                "company": "Hexaware Technologies Ltd", "symbol": "HEXAWARE",
+                "open_date": "12-Feb-2025", "close_date": "14-Feb-2025",
+                "issue_price": "674-708",  "lot_size": 21,  "issue_size_cr": 8750.00,
+                "status": "UPCOMING", "subscription_times": None, "listing_date": None,
+            },
+            {
+                "company": "LG Electronics India Ltd", "symbol": "LGINDO",
+                "open_date": "10-Mar-2025", "close_date": "12-Mar-2025",
+                "issue_price": None, "lot_size": None, "issue_size_cr": 15000.00,
+                "status": "UPCOMING", "subscription_times": None, "listing_date": None,
+            },
+            {
+                "company": "Ather Energy Ltd", "symbol": "ATHER",
+                "open_date": "28-Feb-2025", "close_date": "03-Mar-2025",
+                "issue_price": "304-321",  "lot_size": 46,  "issue_size_cr": 2981.00,
+                "status": "UPCOMING", "subscription_times": None, "listing_date": None,
+            },
+        ],
+        "listed": [
+            {"company": "Standard Glass Lining Technology", "symbol": "SGL",   "listing_date": "20-Jan-2025", "listing_price": 175.00, "listing_gain_pct": 40.00,  "issue_price": "125-133", "status": "LISTED"},
+            {"company": "Stallion India Fluorochemicals",   "symbol": "SFCL",  "listing_date": "16-Jan-2025", "listing_price": 134.00, "listing_gain_pct": 12.61,  "issue_price": "85-90",   "status": "LISTED"},
+            {"company": "Mobikwik",                         "symbol": "MBK",   "listing_date": "18-Dec-2024", "listing_price": 442.25, "listing_gain_pct": 57.30,  "issue_price": "265-279", "status": "LISTED"},
+            {"company": "Vishal Mega Mart",                 "symbol": "VMM",   "listing_date": "18-Dec-2024", "listing_price": 109.50, "listing_gain_pct": 37.61,  "issue_price": "74-78",   "status": "LISTED"},
+            {"company": "Bajaj Housing Finance",            "symbol": "BAJAJHFL","listing_date": "16-Sep-2024","listing_price": 150.00, "listing_gain_pct": 114.29, "issue_price": "66-70",   "status": "LISTED"},
+        ],
+    },
 
+    # ── Sector performance ──────────────────────────────────────────────────
+    "sector_performance": [
+        {"sector": "IT",      "return_1d_pct": -1.25, "return_1w_pct": -2.10, "return_1m_pct": 4.32,  "top_stock": "TCS"},
+        {"sector": "Banking", "return_1d_pct": 0.87,  "return_1w_pct": 1.45,  "return_1m_pct": -1.23, "top_stock": "HDFCBANK"},
+        {"sector": "Pharma",  "return_1d_pct": 1.95,  "return_1w_pct": 3.21,  "return_1m_pct": 6.78,  "top_stock": "SUNPHARMA"},
+        {"sector": "Auto",    "return_1d_pct": 2.18,  "return_1w_pct": 4.32,  "return_1m_pct": 8.45,  "top_stock": "TATAMOTORS"},
+        {"sector": "FMCG",   "return_1d_pct": -0.54, "return_1w_pct": -0.87, "return_1m_pct": 2.14,  "top_stock": "HINDUNILVR"},
+        {"sector": "Energy",  "return_1d_pct": 0.34,  "return_1w_pct": 0.92,  "return_1m_pct": -2.87, "top_stock": "RELIANCE"},
+        {"sector": "Metals",  "return_1d_pct": -1.08, "return_1w_pct": -2.34, "return_1m_pct": -4.12, "top_stock": "TATASTEEL"},
+        {"sector": "Realty",  "return_1d_pct": 1.42,  "return_1w_pct": 2.87,  "return_1m_pct": 5.63,  "top_stock": "DLF"},
+        {"sector": "Infra",   "return_1d_pct": 1.78,  "return_1w_pct": 3.54,  "return_1m_pct": 7.23,  "top_stock": "LT"},
+    ],
 
-def get_demo_portfolio(index: int = 0):
-    """Return a demo portfolio by index."""
-    return DEMO_PORTFOLIOS[index % len(DEMO_PORTFOLIOS)]
+    # ── OHLCV data ──────────────────────────────────────────────────────────
+    "ohlcv": {
+        "RELIANCE":  _ohlcv_series(2480, days=400, trend=0.0004, vol=0.014),
+        "TCS":       _ohlcv_series(3870, days=400, trend=0.0002, vol=0.012),
+        "HDFCBANK":  _ohlcv_series(1570, days=400, trend=0.0003, vol=0.013),
+        "INFY":      _ohlcv_series(1390, days=400, trend=0.0001, vol=0.015),
+        "ICICIBANK": _ohlcv_series(1050, days=400, trend=0.0005, vol=0.014),
+    },
+
+    # ── Fundamentals ────────────────────────────────────────────────────────
+    "fundamentals": {
+        "RELIANCE": {
+            "symbol": "RELIANCE", "company_name": "Reliance Industries Ltd",
+            "sector": "Energy", "industry": "Oil & Gas Integrated",
+            "market_cap_cr": 1_965_432, "current_price": 2934.55,
+            "pe_ratio": 27.8, "pb_ratio": 2.3, "roe_pct": 9.8,
+            "debt_equity": 0.48, "revenue_growth": 8.2, "earnings_growth": 12.4,
+            "52w_high": 3217.90, "52w_low": 2220.30,
+            "avg_volume": 4_800_000, "dividend_yield": 0.34, "beta": 0.82,
+            "description": "Reliance Industries is India's largest conglomerate with operations spanning petrochemicals, refining, oil, telecommunications, and retail.",
+        },
+        "TCS": {
+            "symbol": "TCS", "company_name": "Tata Consultancy Services Ltd",
+            "sector": "Technology", "industry": "IT Services",
+            "market_cap_cr": 1_452_300, "current_price": 4128.60,
+            "pe_ratio": 31.2, "pb_ratio": 15.4, "roe_pct": 48.2,
+            "debt_equity": 0.03, "revenue_growth": 6.8, "earnings_growth": 8.1,
+            "52w_high": 4592.25, "52w_low": 3311.00,
+            "avg_volume": 3_200_000, "dividend_yield": 1.82, "beta": 0.71,
+            "description": "TCS is India's largest IT services company providing software, IT, and IT-enabled services globally.",
+        },
+        "HDFCBANK": {
+            "symbol": "HDFCBANK", "company_name": "HDFC Bank Ltd",
+            "sector": "Financial Services", "industry": "Private Bank",
+            "market_cap_cr": 1_248_000, "current_price": 1648.25,
+            "pe_ratio": 18.4, "pb_ratio": 2.8, "roe_pct": 16.2,
+            "debt_equity": None, "revenue_growth": 14.5, "earnings_growth": 11.8,
+            "52w_high": 1794.00, "52w_low": 1363.55,
+            "avg_volume": 12_400_000, "dividend_yield": 1.12, "beta": 1.04,
+            "description": "India's largest private sector bank with operations in retail banking, wholesale banking, treasury, and digital payments.",
+        },
+        "INFY": {
+            "symbol": "INFY", "company_name": "Infosys Ltd",
+            "sector": "Technology", "industry": "IT Services",
+            "market_cap_cr": 578_000, "current_price": 1385.40,
+            "pe_ratio": 28.9, "pb_ratio": 9.1, "roe_pct": 32.4,
+            "debt_equity": 0.07, "revenue_growth": 4.5, "earnings_growth": 7.2,
+            "52w_high": 1903.75, "52w_low": 1358.35,
+            "avg_volume": 9_800_000, "dividend_yield": 2.41, "beta": 0.78,
+            "description": "Infosys is a global IT services and consulting company providing digital transformation and IT infrastructure services.",
+        },
+        "ICICIBANK": {
+            "symbol": "ICICIBANK", "company_name": "ICICI Bank Ltd",
+            "sector": "Financial Services", "industry": "Private Bank",
+            "market_cap_cr": 884_500, "current_price": 1224.30,
+            "pe_ratio": 17.2, "pb_ratio": 3.2, "roe_pct": 18.7,
+            "debt_equity": None, "revenue_growth": 16.8, "earnings_growth": 14.2,
+            "52w_high": 1329.00, "52w_low": 970.05,
+            "avg_volume": 14_200_000, "dividend_yield": 0.82, "beta": 1.12,
+            "description": "ICICI Bank is India's second largest private sector bank with a diversified portfolio of loans, investments, and digital banking.",
+        },
+    },
+
+    # ── Stock quotes ────────────────────────────────────────────────────────
+    "stock_quotes": {
+        "RELIANCE":  {"symbol": "RELIANCE",  "ltp": 2934.55, "change": 24.50,  "change_pct": 0.84,  "open": 2910.05, "high": 2948.90, "low": 2908.00, "prev_close": 2910.05, "volume": 4_812_345,  "52w_high": 3217.90, "52w_low": 2220.30, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "TCS":       {"symbol": "TCS",       "ltp": 4128.60, "change": -12.30, "change_pct": -0.29, "open": 4144.00, "high": 4155.80, "low": 4121.15, "prev_close": 4140.90, "volume": 3_241_500,  "52w_high": 4592.25, "52w_low": 3311.00, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "HDFCBANK":  {"symbol": "HDFCBANK",  "ltp": 1648.25, "change": 51.25,  "change_pct": 3.21,  "open": 1608.30, "high": 1654.90, "low": 1606.00, "prev_close": 1597.00, "volume": 12_456_780, "52w_high": 1794.00, "52w_low": 1363.55, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "INFY":      {"symbol": "INFY",      "ltp": 1385.40, "change": -34.90, "change_pct": -2.45, "open": 1418.50, "high": 1422.00, "low": 1381.20, "prev_close": 1420.30, "volume": 9_876_543,  "52w_high": 1903.75, "52w_low": 1358.35, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "ICICIBANK": {"symbol": "ICICIBANK", "ltp": 1224.30, "change": 14.80,  "change_pct": 1.22,  "open": 1210.00, "high": 1228.90, "low": 1208.55, "prev_close": 1209.50, "volume": 14_231_000, "52w_high": 1329.00, "52w_low": 970.05,  "timestamp": "2025-01-20T10:30:00+05:30"},
+        "BAJFINANCE":{"symbol": "BAJFINANCE","ltp": 6984.30, "change": 157.40, "change_pct": 2.31,  "open": 6828.00, "high": 6998.00, "low": 6820.10, "prev_close": 6826.90, "volume": 2_145_678,  "52w_high": 7830.00, "52w_low": 6187.80, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "SBIN":      {"symbol": "SBIN",      "ltp": 762.40,  "change": -7.30,  "change_pct": -0.95, "open": 771.00,  "high": 773.50,  "low": 760.00,  "prev_close": 769.70,  "volume": 24_123_456, "52w_high": 912.10,  "52w_low": 600.65,  "timestamp": "2025-01-20T10:30:00+05:30"},
+        "TATAMOTORS":{"symbol": "TATAMOTORS","ltp": 876.45,  "change": 18.75,  "change_pct": 2.18,  "open": 858.00,  "high": 881.50,  "low": 856.20,  "prev_close": 857.70,  "volume": 15_678_901, "52w_high": 1179.00, "52w_low": 718.85,  "timestamp": "2025-01-20T10:30:00+05:30"},
+        "ADANIENT":  {"symbol": "ADANIENT",  "ltp": 2436.10, "change": 60.20,  "change_pct": 2.54,  "open": 2376.50, "high": 2448.00, "low": 2371.00, "prev_close": 2375.90, "volume": 4_567_890,  "52w_high": 3743.90, "52w_low": 2025.50, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "WIPRO":     {"symbol": "WIPRO",     "ltp": 487.50,  "change": 13.60,  "change_pct": 2.87,  "open": 474.00,  "high": 489.90,  "low": 473.20,  "prev_close": 473.90,  "volume": 8_234_567,  "52w_high": 583.90,  "52w_low": 391.20,  "timestamp": "2025-01-20T10:30:00+05:30"},
+        "SUNPHARMA": {"symbol": "SUNPHARMA", "ltp": 1654.80, "change": 31.70,  "change_pct": 1.95,  "open": 1624.50, "high": 1661.00, "low": 1621.00, "prev_close": 1623.10, "volume": 3_456_789,  "52w_high": 1960.35, "52w_low": 1240.25, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "LT":        {"symbol": "LT",        "ltp": 3547.20, "change": 62.10,  "change_pct": 1.78,  "open": 3487.00, "high": 3558.90, "low": 3482.00, "prev_close": 3485.10, "volume": 2_876_543,  "52w_high": 3963.95, "52w_low": 2700.80, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "ITC":       {"symbol": "ITC",       "ltp": 432.15,  "change": -8.70,  "change_pct": -1.98, "open": 441.00,  "high": 441.90,  "low": 430.50,  "prev_close": 440.85,  "volume": 28_456_123, "52w_high": 528.50,  "52w_low": 399.35,  "timestamp": "2025-01-20T10:30:00+05:30"},
+        "ONGC":      {"symbol": "ONGC",      "ltp": 214.30,  "change": -3.45,  "change_pct": -1.58, "open": 218.00,  "high": 218.50,  "low": 213.80,  "prev_close": 217.75,  "volume": 18_765_432, "52w_high": 345.00,  "52w_low": 196.20,  "timestamp": "2025-01-20T10:30:00+05:30"},
+        "AXISBANK":  {"symbol": "AXISBANK",  "ltp": 1082.50, "change": 8.90,   "change_pct": 0.83,  "open": 1074.00, "high": 1087.90, "low": 1071.00, "prev_close": 1073.60, "volume": 7_891_234,  "52w_high": 1339.65, "52w_low": 995.65,  "timestamp": "2025-01-20T10:30:00+05:30"},
+        "KOTAKBANK": {"symbol": "KOTAKBANK", "ltp": 1756.40, "change": 14.30,  "change_pct": 0.82,  "open": 1744.00, "high": 1762.30, "low": 1740.50, "prev_close": 1742.10, "volume": 5_432_100,  "52w_high": 2063.35, "52w_low": 1543.85, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "HINDUNILVR":{"symbol": "HINDUNILVR","ltp": 2342.80, "change": -13.20, "change_pct": -0.56, "open": 2358.00, "high": 2362.00, "low": 2338.50, "prev_close": 2356.00, "volume": 1_234_567,  "52w_high": 2852.00, "52w_low": 2172.05, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "BAJAJHFL":  {"symbol": "BAJAJHFL",  "ltp": 128.30,  "change": 1.45,   "change_pct": 1.14,  "open": 127.00,  "high": 129.50,  "low": 126.60,  "prev_close": 126.85,  "volume": 45_678_901, "52w_high": 188.65,  "52w_low": 58.45,   "timestamp": "2025-01-20T10:30:00+05:30"},
+        "NTPC":      {"symbol": "NTPC",      "ltp": 348.75,  "change": 5.20,   "change_pct": 1.51,  "open": 344.00,  "high": 350.10,  "low": 343.20,  "prev_close": 343.55,  "volume": 22_123_456, "52w_high": 448.45,  "52w_low": 246.85,  "timestamp": "2025-01-20T10:30:00+05:30"},
+        "MARUTI":    {"symbol": "MARUTI",    "ltp": 11245.00,"change": 187.50, "change_pct": 1.69,  "open": 11058.00,"high": 11298.00,"low": 11045.00,"prev_close": 11057.50, "volume": 456_789,   "52w_high": 13680.00, "52w_low": 9756.00, "timestamp": "2025-01-20T10:30:00+05:30"},
+        "ZOMATO":    {"symbol": "ZOMATO",    "ltp": 234.50,  "change": 4.80,   "change_pct": 2.09,  "open": 229.80,  "high": 236.40,  "low": 229.00,  "prev_close": 229.70,  "volume": 42_567_890, "52w_high": 304.70,  "52w_low": 143.10,  "timestamp": "2025-01-20T10:30:00+05:30"},
+    },
+
+    # ── Multiple quotes (for batch) ──────────────────────────────────────────
+    "multiple_quotes": [
+        {"symbol": "RELIANCE",  "ltp": 2934.55, "change": 24.50,  "change_pct": 0.84,  "volume": 4_812_345,  "high": 2948.90, "low": 2908.00, "timestamp": "2025-01-20T10:30:00+05:30"},
+        {"symbol": "TCS",       "ltp": 4128.60, "change": -12.30, "change_pct": -0.29, "volume": 3_241_500,  "high": 4155.80, "low": 4121.15, "timestamp": "2025-01-20T10:30:00+05:30"},
+        {"symbol": "HDFCBANK",  "ltp": 1648.25, "change": 51.25,  "change_pct": 3.21,  "volume": 12_456_780, "high": 1654.90, "low": 1606.00, "timestamp": "2025-01-20T10:30:00+05:30"},
+        {"symbol": "INFY",      "ltp": 1385.40, "change": -34.90, "change_pct": -2.45, "volume": 9_876_543,  "high": 1422.00, "low": 1381.20, "timestamp": "2025-01-20T10:30:00+05:30"},
+        {"symbol": "ICICIBANK", "ltp": 1224.30, "change": 14.80,  "change_pct": 1.22,  "volume": 14_231_000, "high": 1228.90, "low": 1208.55, "timestamp": "2025-01-20T10:30:00+05:30"},
+    ],
+}

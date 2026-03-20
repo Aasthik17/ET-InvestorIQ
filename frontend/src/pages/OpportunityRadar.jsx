@@ -1,229 +1,513 @@
-/**
- * OpportunityRadar — Bloomberg-style signal terminal.
- * Left: filter panel. Right: row-based signal feed with accordion expand.
- */
-import { useState, useMemo } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, SlidersHorizontal } from 'lucide-react'
-import { radarAPI } from '../services/api'
-import SignalRow from '../components/common/SignalRow'
-import LoadingSpinner from '../components/common/LoadingSpinner'
+import React, { useState, useMemo } from 'react'
+import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
+import {
+  useRadarData, useInsiderTrades, useBulkDeals, useFilings
+} from '../hooks/useMarketData'
+import {
+  formatPrice, formatCrores, formatPct, formatRelativeTime,
+  formatIndianNumber, formatShortDate
+} from '../utils/formatters'
 
-const SIGNAL_TYPES = [
-  { key: 'INSIDER_TRADE',    label: 'Insider Trade',     color: '#F59E0B' },
-  { key: 'BULK_DEAL',        label: 'Bulk Deal',         color: '#787B86' },
-  { key: 'FII_ACCUMULATION', label: 'FII / DII Flow',    color: '#10B981' },
-  { key: 'FILING',           label: 'Corporate Filing',  color: '#8B5CF6' },
-  { key: 'TECHNICAL',        label: 'Technical Signal',  color: '#06B6D4' },
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const SIGNAL_TYPE_COLORS = {
+  INSIDER:   { bg: 'rgba(233,69,96,0.15)',   border: '#E94560', text: '#E94560' },
+  FILING:    { bg: 'rgba(41,98,255,0.12)',   border: '#2962FF', text: '#2962FF' },
+  TECHNICAL: { bg: 'rgba(249,168,37,0.12)', border: '#F9A825', text: '#F9A825' },
+  FII:       { bg: 'rgba(38,166,154,0.12)', border: '#26A69A', text: '#26A69A' },
+  CORPORATE: { bg: 'rgba(120,123,134,0.15)', border: '#787B86', text: '#787B86' },
+}
+
+const FILING_CATEGORY_COLORS = {
+  'Financial Results':  { bg: 'rgba(38,166,154,0.13)', color: '#26A69A' },
+  'Insider Trading':    { bg: 'rgba(233,69,96,0.13)',  color: '#E94560' },
+  'Board Meeting':      { bg: 'rgba(41,98,255,0.12)',  color: '#2962FF' },
+  'Acquisition':        { bg: 'rgba(38,166,154,0.10)', color: '#26A69A' },
+  'Resignation':        { bg: 'rgba(239,83,80,0.12)',  color: '#EF5350' },
+  'Regulatory':         { bg: 'rgba(249,168,37,0.10)', color: '#F9A825' },
+}
+
+const KNOWN_FII = ['mirae', 'sbi mutual', 'hdfc mutual', 'nippon', 'axis mutual', 'franklin', 'icici prudential', 'dsp', 'kotak', 'aditya birla']
+
+function isFII(name = '') {
+  const lower = name.toLowerCase()
+  return KNOWN_FII.some(f => lower.includes(f))
+}
+
+function Skeleton({ h = 32, className = '' }) {
+  return <div className={`skeleton ${className}`} style={{ height: h, borderRadius: 2, marginBottom: 4 }} />
+}
+
+function Badge({ label, style }) {
+  return (
+    <span style={{
+      fontSize: 9, letterSpacing: '0.06em', textTransform: 'uppercase',
+      padding: '1px 5px', borderRadius: 2, fontWeight: 600,
+      border: '1px solid', ...style,
+    }}>
+      {label}
+    </span>
+  )
+}
+
+function DirectionBadge({ dir }) {
+  const color = dir === 'BUY' || dir === 'BULLISH' ? '#26A69A'
+              : dir === 'SELL' || dir === 'BEARISH' ? '#EF5350' : '#787B86'
+  return <Badge label={dir} style={{ color, borderColor: color + '66', background: color + '14' }} />
+}
+
+// ─── Stats Bar ────────────────────────────────────────────────────────────────
+
+function StatsBar({ radarData }) {
+  const signals = radarData?.signals || []
+  const total   = radarData?.total   || signals.length
+  const bullish = signals.filter(s => (s.expected_impact || '').toUpperCase() === 'BULLISH').length
+  const bearish = signals.filter(s => (s.expected_impact || '').toUpperCase() === 'BEARISH').length
+  const actionable = signals.filter(s => (s.confidence_score || 0) > 0.6).length
+  const age = radarData?.generated_at ? formatRelativeTime(radarData.generated_at) : ''
+
+  return (
+    <div style={{
+      display: 'flex', gap: 24, padding: '8px 16px',
+      borderBottom: '1px solid var(--border-primary)',
+      background: 'var(--bg-secondary)', flexShrink: 0,
+      alignItems: 'center', flexWrap: 'wrap',
+    }}>
+      <StatItem label="Signals" value={total} />
+      <StatItem label="Actionable" value={actionable} color="#26A69A" />
+      <StatItem label="Bullish" value={bullish} color="#26A69A" />
+      <StatItem label="Bearish" value={bearish} color="#EF5350" />
+      {age && (
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+          Refreshed {age}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function StatItem({ label, value, color }) {
+  return (
+    <div>
+      <div style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 600, color: color || 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+        {value ?? '—'}
+      </div>
+    </div>
+  )
+}
+
+// ─── Signal row (for All Signals tab) ────────────────────────────────────────
+
+function SignalRow({ signal }) {
+  const [expanded, setExpanded] = useState(false)
+  const direction = (signal.expected_impact || '').toUpperCase()
+  const borderColor = direction === 'BULLISH' ? '#26A69A'
+                    : direction === 'BEARISH' ? '#EF5350' : '#787B86'
+  const sigType = (signal.signal_type || '').toUpperCase()
+  const typeStyle = SIGNAL_TYPE_COLORS[sigType] || SIGNAL_TYPE_COLORS.CORPORATE
+  const conf = Math.round((signal.confidence_score || 0) * 100)
+  const barColor = conf >= 75 ? '#26A69A' : conf >= 50 ? '#F9A825' : '#787B86'
+
+  return (
+    <>
+      <div
+        onClick={() => setExpanded(v => !v)}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '80px 80px 1fr 72px 52px 56px 20px',
+          alignItems: 'center',
+          gap: 8, padding: '7px 12px',
+          borderBottom: '1px solid var(--border-primary)',
+          borderLeft: `3px solid ${borderColor}`,
+          cursor: 'pointer',
+          background: expanded ? 'var(--bg-hover)' : 'transparent',
+          transition: 'background 0.1s',
+        }}
+      >
+        {/* Symbol */}
+        <span className="price" style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>
+          {signal.symbol}
+        </span>
+
+        {/* Type badge */}
+        <span style={{
+          fontSize: 9, padding: '2px 5px', borderRadius: 2,
+          background: typeStyle.bg, color: typeStyle.text,
+          border: `1px solid ${typeStyle.border}66`,
+          letterSpacing: '0.05em', textTransform: 'uppercase', fontWeight: 600,
+          whiteSpace: 'nowrap',
+        }}>
+          {sigType}
+        </span>
+
+        {/* Headline */}
+        <span style={{
+          fontSize: 11, color: 'var(--text-secondary)',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          {signal.headline || signal.summary || ''}
+        </span>
+
+        {/* Confidence bar */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <div style={{
+            height: 3, background: 'var(--border-primary)', borderRadius: 2, overflow: 'hidden',
+          }}>
+            <div style={{ width: `${conf}%`, height: '100%', background: barColor, borderRadius: 2 }} />
+          </div>
+          <span className="price" style={{ fontSize: 9, color: barColor }}>{conf}%</span>
+        </div>
+
+        {/* Direction */}
+        <DirectionBadge dir={direction} />
+
+        {/* Time */}
+        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+          {formatRelativeTime(signal.signal_date || signal.created_at)}
+        </span>
+
+        {/* Expand icon */}
+        <span style={{ color: 'var(--text-muted)' }}>
+          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </span>
+      </div>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div style={{
+          padding: '10px 16px 12px',
+          background: 'var(--bg-tertiary)',
+          borderBottom: '1px solid var(--border-primary)',
+          borderLeft: `3px solid ${borderColor}`,
+          fontSize: 11, color: 'var(--text-secondary)',
+          lineHeight: 1.6,
+        }}>
+          {signal.ai_analysis || signal.description || signal.summary || 'No analysis available.'}
+          {signal.price_target && (
+            <div style={{ marginTop: 8, display: 'flex', gap: 16 }}>
+              <span>Target: <strong className="price text-bull">{formatPrice(signal.price_target)}</strong></span>
+              {signal.stop_loss && <span>Stop Loss: <strong className="price text-bear">{formatPrice(signal.stop_loss)}</strong></span>}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
+// ─── Insider trade row ────────────────────────────────────────────────────────
+
+function InsiderRow({ trade }) {
+  const isUp = (trade.trade_type || '').toUpperCase() === 'BUY'
+  const delta = (trade.post_holding_pct || 0) - (trade.pre_holding_pct || 0)
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: '72px 160px 80px 72px 80px 80px 72px',
+      alignItems: 'center', gap: 8, padding: '6px 12px',
+      borderBottom: '1px solid var(--border-primary)',
+      borderLeft: `3px solid ${isUp ? '#26A69A' : '#EF5350'}`,
+    }}>
+      <span className="price" style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>
+        {trade.symbol}
+      </span>
+      <span style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {trade.person_name}
+      </span>
+      <Badge label={trade.category?.split(' ')[0] || 'Promoter'}
+        style={{ color: '#F9A825', borderColor: '#F9A82566', background: '#F9A82514', fontSize: 9 }} />
+      <DirectionBadge dir={trade.trade_type || 'BUY'} />
+      <span className="price" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+        {formatIndianNumber(trade.quantity, 0)} sh
+      </span>
+      <span className="price" style={{ fontSize: 11 }}>
+        {formatCrores(trade.value_cr)}
+      </span>
+      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+        {delta !== 0 ? (
+          <span className={delta > 0 ? 'text-bull' : 'text-bear'}>
+            {delta > 0 ? '▲' : '▼'}{Math.abs(delta).toFixed(2)}%
+          </span>
+        ) : formatShortDate(trade.date)}
+      </span>
+    </div>
+  )
+}
+
+// ─── Bulk/Block deal row ──────────────────────────────────────────────────────
+
+function DealRow({ deal }) {
+  const isUp    = (deal.buy_sell || '').toUpperCase() === 'BUY'
+  const isBlock = (deal.deal_type || '').toUpperCase() === 'BLOCK'
+  const fiiClient = isFII(deal.client_name)
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '72px 64px 200px 64px 80px 72px 60px',
+      alignItems: 'center', gap: 8, padding: '6px 12px',
+      borderBottom: '1px solid var(--border-primary)',
+      borderLeft: `3px solid ${isUp ? '#26A69A' : '#EF5350'}`,
+    }}>
+      <span className="price" style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>
+        {deal.symbol}
+      </span>
+      <Badge label={deal.deal_type || 'BULK'}
+        style={{ color: isBlock ? '#2962FF' : '#F9A825', borderColor: (isBlock ? '#2962FF' : '#F9A825') + '55', background: (isBlock ? '#2962FF' : '#F9A825') + '14', fontSize: 9 }} />
+      <span style={{
+        fontSize: 11,
+        color: fiiClient ? '#2962FF' : 'var(--text-secondary)',
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      }}>
+        {deal.client_name}
+      </span>
+      <DirectionBadge dir={deal.buy_sell || 'BUY'} />
+      <span className="price" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+        {formatPrice(deal.price)}
+      </span>
+      <span className="price" style={{ fontSize: 11 }}>
+        {formatCrores(deal.value_cr)}
+      </span>
+      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+        {formatShortDate(deal.date)}
+      </span>
+    </div>
+  )
+}
+
+// ─── Filing row ───────────────────────────────────────────────────────────────
+
+function FilingRow({ filing }) {
+  const catStyle = FILING_CATEGORY_COLORS[filing.category] || { bg: 'rgba(120,123,134,0.15)', color: '#787B86' }
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: '160px 120px 1fr 72px',
+      alignItems: 'center', gap: 8, padding: '6px 12px',
+      borderBottom: '1px solid var(--border-primary)',
+    }}>
+      <span style={{ fontSize: 11, color: 'var(--text-primary)', fontWeight: 500,
+                     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {filing.company?.slice(0, 22) || filing.symbol}
+      </span>
+      <span style={{
+        fontSize: 9, padding: '2px 5px', borderRadius: 2,
+        background: catStyle.bg, color: catStyle.color,
+        border: `1px solid ${catStyle.color}44`,
+        letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600,
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      }}>
+        {(filing.category || '').slice(0, 18)}
+      </span>
+      <span style={{
+        fontSize: 11, color: 'var(--text-secondary)',
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      }}>
+        {(filing.headline || filing.subject || '').slice(0, 70)}
+      </span>
+      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+        {formatShortDate(filing.date)}
+      </span>
+    </div>
+  )
+}
+
+// ─── Column headers ───────────────────────────────────────────────────────────
+
+function ColHeaders({ tab }) {
+  const configs = {
+    signals:  ['Symbol', 'Type', 'Headline', 'Confidence', 'Direction', 'Time', ''],
+    insider:  ['Symbol', 'Person', 'Category', 'Trade', 'Quantity', 'Value', 'Δ Holding'],
+    bulk:     ['Symbol', 'Type', 'Client', 'Side', 'Price', 'Value', 'Date'],
+    filings:  ['Company', 'Category', 'Headline', 'Date'],
+  }
+  const widths = {
+    signals:  '80px 80px 1fr 72px 52px 56px 20px',
+    insider:  '72px 160px 80px 72px 80px 80px 72px',
+    bulk:     '72px 64px 200px 64px 80px 72px 60px',
+    filings:  '160px 120px 1fr 72px',
+  }
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: widths[tab] || '1fr',
+      padding: '5px 12px',
+      gap: 8,
+      borderBottom: '1px solid var(--border-secondary)',
+      background: 'var(--bg-secondary)',
+      position: 'sticky', top: 0, zIndex: 2,
+    }}>
+      {(configs[tab] || []).map((col, i) => (
+        <span key={i} style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          {col}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+// ─── MAIN Opportunity Radar ───────────────────────────────────────────────────
+
+const TABS = [
+  { id: 'signals',  label: 'All Signals' },
+  { id: 'insider',  label: 'Insider Trades' },
+  { id: 'bulk',     label: 'Bulk/Block Deals' },
+  { id: 'filings',  label: 'Filings' },
 ]
 
-const FEED_COLS = ['SYMBOL', 'TYPE', 'SIGNAL', 'CONFIDENCE', 'TIME', '']
-
 export default function OpportunityRadar() {
-  const qc = useQueryClient()
-  const [direction, setDirection] = useState('ALL')
-  const [minConf, setMinConf] = useState(0)
-  const [enabledTypes, setEnabledTypes] = useState(new Set(SIGNAL_TYPES.map(t => t.key)))
+  const [activeTab, setActiveTab] = useState('signals')
 
-  const { data: raw, isFetching, dataUpdatedAt } = useQuery({
-    queryKey: ['radar', 'signals'],
-    queryFn: () => radarAPI.signals({ limit: 50 }),
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-  })
+  // Filters for signals tab
+  const [dirFilter,  setDirFilter]  = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
+  const [minConf,    setMinConf]    = useState(0)
 
-  const refreshMutation = useMutation({
-    mutationFn: radarAPI.refresh,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['radar', 'signals'] }),
-  })
+  const filters = useMemo(() => ({
+    ...(dirFilter  ? { direction: dirFilter }              : {}),
+    ...(typeFilter ? { signal_types: typeFilter }          : {}),
+    ...(minConf    ? { min_confidence: minConf / 100 }     : {}),
+  }), [dirFilter, typeFilter, minConf])
 
-  const signals = useMemo(() => {
-    const all = Array.isArray(raw) ? raw : raw?.signals || []
-    return all.filter(s => {
-      const dir = (s.direction || '').toUpperCase()
-      if (direction === 'BULLISH' && !['BULLISH', 'BUY'].includes(dir)) return false
-      if (direction === 'BEARISH' && !['BEARISH', 'SELL'].includes(dir)) return false
-      if (!enabledTypes.has(s.signal_type)) return false
-      if ((s.confidence_score ?? 0) * 100 < minConf) return false
-      return true
-    })
-  }, [raw, direction, minConf, enabledTypes])
+  const radarQ   = useRadarData(filters)
+  const insiderQ = useInsiderTrades()
+  const bulkQ    = useBulkDeals()
+  const filingsQ = useFilings()
 
-  const bullCount    = signals.filter(s => ['BULLISH','BUY'].includes((s.direction||'').toUpperCase())).length
-  const bearCount    = signals.filter(s => ['BEARISH','SELL'].includes((s.direction||'').toUpperCase())).length
-  const neutralCount = signals.length - bullCount - bearCount
+  const activeQuery = {
+    signals: radarQ,
+    insider: insiderQ,
+    bulk:    bulkQ,
+    filings: filingsQ,
+  }[activeTab]
 
-  const lastUpdate = dataUpdatedAt
-    ? (() => { const s = Math.round((Date.now() - dataUpdatedAt) / 1000); return s < 60 ? 'Just now' : `${Math.round(s/60)}m ago` })()
-    : '—'
-
-  const toggleType = key => {
-    setEnabledTypes(prev => {
-      const n = new Set(prev)
-      n.has(key) ? n.delete(key) : n.add(key)
-      return n
-    })
-  }
+  // Extract data arrays
+  const signals = radarQ.data?.signals || []
+  const insiders = insiderQ.data?.trades || (Array.isArray(insiderQ.data) ? insiderQ.data : [])
+  const bulkData = bulkQ.data
+  const bulk    = [...(bulkData?.bulk || []), ...(bulkData?.block || [])]
+  const filings = filingsQ.data?.filings || (Array.isArray(filingsQ.data) ? filingsQ.data : [])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
 
-      {/* ── Stats bar ──────────────────────────────────────────────────── */}
+      {/* Stats bar */}
+      <StatsBar radarData={radarQ.data} />
+
+      {/* Tab bar */}
       <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        height: '44px',
-        background: '#1E222D',
-        borderBottom: '1px solid #2A2E39',
-        padding: '0 16px',
-        gap: '24px',
+        display: 'flex', alignItems: 'center', gap: 0,
+        padding: '0 12px',
+        borderBottom: '1px solid var(--border-primary)',
+        background: 'var(--bg-secondary)',
         flexShrink: 0,
       }}>
-        {[
-          { label: 'Signals Scanned', val: (Array.isArray(raw) ? raw.length : raw?.total || 0) + ' scanned' },
-          { label: 'Actionable Today', val: `${signals.length} signals` },
-          { label: 'Direction',        val: <><span className="bull">{bullCount} Bull</span> · <span className="bear">{bearCount} Bear</span> · <span style={{color:'#787B86'}}>{neutralCount} Neutral</span></> },
-          { label: 'Updated',          val: lastUpdate },
-        ].map(({ label, val }, i) => (
-          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '1px', borderRight: i < 3 ? '1px solid #2A2E39' : 'none', paddingRight: i < 3 ? '24px' : 0 }}>
-            <span className="label">{label}</span>
-            {typeof val === 'string' || typeof val === 'number'
-              ? <span className="price text-xs" style={{ color: '#D1D4DC' }}>{val}</span>
-              : <span className="text-xs" style={{ color: '#D1D4DC' }}>{val}</span>
-            }
-          </div>
-        ))}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+        {TABS.map(tab => (
           <button
-            className="btn-secondary"
-            onClick={() => refreshMutation.mutate()}
-            disabled={refreshMutation.isPending || isFetching}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            style={{
+              padding: '8px 14px', fontSize: 11, fontWeight: 500,
+              border: 'none', background: 'transparent', cursor: 'pointer',
+              color: activeTab === tab.id ? 'var(--text-primary)' : 'var(--text-muted)',
+              borderBottom: activeTab === tab.id ? '2px solid #2962FF' : '2px solid transparent',
+              transition: 'all 0.1s',
+            }}
           >
-            <RefreshCw size={12} style={{ animation: (refreshMutation.isPending || isFetching) ? 'spin 0.8s linear infinite' : 'none' }} />
-            Refresh
+            {tab.label}
           </button>
-        </div>
+        ))}
+
+        {/* Filters — only on signals tab */}
+        {activeTab === 'signals' && (
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select
+              value={dirFilter}
+              onChange={e => setDirFilter(e.target.value)}
+              style={{
+                background: 'var(--bg-tertiary)', border: '1px solid var(--border-primary)',
+                color: 'var(--text-secondary)', fontSize: 10, padding: '3px 6px',
+                borderRadius: 2, outline: 'none',
+              }}
+            >
+              <option value="">All Directions</option>
+              <option value="BULLISH">Bullish</option>
+              <option value="BEARISH">Bearish</option>
+              <option value="NEUTRAL">Neutral</option>
+            </select>
+            <select
+              value={typeFilter}
+              onChange={e => setTypeFilter(e.target.value)}
+              style={{
+                background: 'var(--bg-tertiary)', border: '1px solid var(--border-primary)',
+                color: 'var(--text-secondary)', fontSize: 10, padding: '3px 6px',
+                borderRadius: 2, outline: 'none',
+              }}
+            >
+              <option value="">All Types</option>
+              <option value="INSIDER">Insider</option>
+              <option value="FILING">Filing</option>
+              <option value="TECHNICAL">Technical</option>
+              <option value="FII">FII</option>
+            </select>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-muted)' }}>
+              Min conf
+              <input type="range" min={0} max={90} step={10} value={minConf}
+                onChange={e => setMinConf(Number(e.target.value))}
+                style={{ width: 56, accentColor: '#2962FF' }} />
+              <span>{minConf}%</span>
+            </label>
+            <button
+              onClick={() => activeQuery.refetch?.()}
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }}
+              title="Refresh"
+            >
+              <RefreshCw size={11} />
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* ── Main: filter panel + feed ─────────────────────────────────── */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      {/* Column headers */}
+      <ColHeaders tab={activeTab} />
 
-        {/* Filter panel — 264px */}
-        <div style={{
-          width: '264px', minWidth: '264px',
-          background: '#1E222D',
-          borderRight: '1px solid #2A2E39',
-          overflow: 'auto',
-          flexShrink: 0,
-        }}>
-          <div style={{ padding: '12px' }}>
+      {/* Data rows */}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {activeQuery?.isLoading && Array(8).fill(0).map((_, i) => <Skeleton key={i} h={36} />)}
 
-            {/* Signal Type */}
-            <div className="label" style={{ marginBottom: '8px' }}>Signal Type</div>
-            {SIGNAL_TYPES.map(t => (
-              <label key={t.key} style={{
-                display: 'flex', alignItems: 'center', gap: '8px',
-                height: '28px', cursor: 'pointer',
-              }}>
-                <input
-                  type="checkbox"
-                  checked={enabledTypes.has(t.key)}
-                  onChange={() => toggleType(t.key)}
-                  style={{ accentColor: '#2962FF', width: '13px', height: '13px' }}
-                />
-                <span className="text-xs" style={{ color: enabledTypes.has(t.key) ? '#D1D4DC' : '#787B86' }}>
-                  {t.label}
-                </span>
-              </label>
-            ))}
-
-            <div className="divider-h" style={{ margin: '12px 0' }} />
-
-            {/* Direction */}
-            <div className="label" style={{ marginBottom: '8px' }}>Direction</div>
-            <div className="toggle-group">
-              {['ALL', 'BULLISH', 'BEARISH'].map(d => (
-                <button
-                  key={d}
-                  className={`toggle-btn${direction === d ? ' active' : ''}`}
-                  onClick={() => setDirection(d)}
-                  style={{ fontSize: '11px' }}
-                >
-                  {d === 'BULLISH' ? '▲ Bull' : d === 'BEARISH' ? '▼ Bear' : 'All'}
-                </button>
-              ))}
-            </div>
-
-            <div className="divider-h" style={{ margin: '12px 0' }} />
-
-            {/* Min confidence */}
-            <div className="label" style={{ marginBottom: '8px' }}>
-              Min Confidence <span className="price" style={{ color: '#D1D4DC', marginLeft: '4px' }}>≥ {minConf}%</span>
-            </div>
-            <input
-              type="range" min={0} max={90} step={5} value={minConf}
-              onChange={e => setMinConf(+e.target.value)}
-              style={{ width: '100%', accentColor: '#2962FF', margin: 0 }}
-            />
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-xs" style={{ color: '#4C525E' }}>0%</span>
-              <span className="text-xs" style={{ color: '#4C525E' }}>90%</span>
-            </div>
+        {activeQuery?.isError && (
+          <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+            Data unavailable — will retry shortly
           </div>
-        </div>
+        )}
 
-        {/* Signal feed — right panel */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {/* Feed header */}
-          <div style={{
-            display: 'flex',
-            height: '32px',
-            background: '#1E222D',
-            borderBottom: '1px solid #2A2E39',
-            alignItems: 'center',
-            padding: '0 12px',
-            flexShrink: 0,
-          }}>
-            {[
-              { label: 'SYMBOL', w: '80px' },
-              { label: 'TYPE',   w: '90px' },
-              { label: 'SIGNAL', flex: 1 },
-              { label: 'CONFIDENCE', w: '80px' },
-              { label: 'TIME',  w: '64px', right: true },
-              { label: '',      w: '24px' },
-            ].map((col, i) => (
-              <div
-                key={i}
-                className="label"
-                style={{
-                  width: col.w,
-                  flex: col.flex,
-                  textAlign: col.right ? 'right' : 'left',
-                  flexShrink: 0,
-                  paddingRight: col.flex ? '12px' : 0,
-                }}
-              >
-                {col.label}
-              </div>
-            ))}
-          </div>
+        {/* Signals */}
+        {activeTab === 'signals' && !activeQuery?.isLoading && (
+          signals.length > 0
+            ? signals.map(s => <SignalRow key={s.signal_id || s.id} signal={s} />)
+            : <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No signals found</div>
+        )}
 
-          {/* Rows */}
-          <div style={{ flex: 1, overflowY: 'auto' }}>
-            {isFetching && signals.length === 0 ? (
-              <div style={{ display: 'flex', justifyContent: 'center', padding: '32px' }}>
-                <LoadingSpinner size={18} text="Loading signals..." />
-              </div>
-            ) : signals.length === 0 ? (
-              <div style={{ padding: '32px 16px', textAlign: 'center' }}>
-                <SlidersHorizontal size={20} style={{ color: '#4C525E', margin: '0 auto 8px' }} />
-                <div className="text-xs" style={{ color: '#4C525E' }}>No signals match your filters</div>
-              </div>
-            ) : (
-              signals.map((s, i) => <SignalRow key={s.signal_id || i} signal={s} />)
-            )}
-          </div>
-        </div>
+        {/* Insider */}
+        {activeTab === 'insider' && !activeQuery?.isLoading && (
+          insiders.length > 0
+            ? insiders.map((t, i) => <InsiderRow key={i} trade={t} />)
+            : <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No insider trades</div>
+        )}
+
+        {/* Bulk deals */}
+        {activeTab === 'bulk' && !activeQuery?.isLoading && (
+          bulk.length > 0
+            ? bulk.map((d, i) => <DealRow key={i} deal={d} />)
+            : <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No deals</div>
+        )}
+
+        {/* Filings */}
+        {activeTab === 'filings' && !activeQuery?.isLoading && (
+          filings.length > 0
+            ? filings.map((f, i) => <FilingRow key={i} filing={f} />)
+            : <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No filings</div>
+        )}
       </div>
     </div>
   )
