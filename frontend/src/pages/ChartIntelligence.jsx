@@ -1,317 +1,777 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
-import CandlestickChart from '../components/chart/CandlestickChart';
-import PatternPanel from '../components/chart/PatternPanel';
-import { STOCK_LIST, getStockData, getLatestQuote } from '../data/mockChartData';
-import { getPatterns } from '../data/mockPatterns';
-import { computeEMA, computeRSI, computeMACD, computeBollingerBands, computeVolumeMA } from '../utils/indicators';
+import React, { useState, useEffect, useMemo } from 'react'
+import {
+  ComposedChart, Bar, Line, XAxis, YAxis,
+  CartesianGrid, Tooltip, ResponsiveContainer,
+  ReferenceLine,
+} from 'recharts'
+import { useChartData } from '../hooks/useChartData'
+import { STOCK_LIST, getStockData } from '../data/mockChartData'
+import { getPatterns } from '../data/mockPatterns'
+import {
+  computeEMA, computeRSI, computeMACD,
+  computeBollingerBands, computeVolumeMA,
+} from '../utils/indicators'
+
+const C = {
+  bgPage:      '#131722',
+  bgCard:      '#1E222D',
+  bgElevated:  '#2A2E39',
+  bgHover:     '#363A45',
+  border:      '#2A2E39',
+  borderStrong:'#363A45',
+  textPrimary: '#D1D4DC',
+  textSecond:  '#787B86',
+  textMuted:   '#4C525E',
+  bull:        '#26A69A',
+  bear:        '#EF5350',
+  accent:      '#2962FF',
+  accentSubtle:'#1E2B4D',
+  ema20:       '#F59E0B',
+  ema50:       '#2962FF',
+  ema200:      '#8B5CF6',
+  bbColor:     '#4C525E',
+  et:          '#F26522',
+}
+const MONO = "'JetBrains Mono', 'Courier New', monospace"
+
+const PERIOD_MAP = {
+  '1W': '5d',
+  '1M': '1mo',
+  '3M': '3mo',
+  '6M': '6mo',
+  '1Y': '1y',
+  '2Y': '2y',
+  '5Y': '5y',
+}
 
 export default function ChartIntelligence() {
-  const [selectedSymbol, setSelectedSymbol] = useState("RELIANCE");
-  const [timeframe, setTimeframe] = useState("1Y");
-  const [indicators, setIndicators] = useState({ showEMA: true, showBB: true, showVOL: true });
-  
-  const [searchQuery, setSearchQuery] = useState("");
-  const [showSearch, setShowSearch] = useState(false);
-  const searchRef = useRef(null);
 
-  const [selectedPattern, setSelectedPattern] = useState(null);
+  // State
+  const [symbol,    setSymbol]    = useState('RELIANCE')
+  const [timeframe, setTimeframe] = useState('1Y')
+  const [search,    setSearch]    = useState('')
+  const [showDrop,  setShowDrop]  = useState(false)
+  const [showEMA,   setShowEMA]   = useState(true)
+  const [showBB,    setShowBB]    = useState(false)
+  const [showVol,   setShowVol]   = useState(true)
+  const [showRSI,   setShowRSI]   = useState(true)
+  const [showMACD,  setShowMACD]  = useState(false)
 
-  useEffect(() => {
-    function handleClickOutside(event) {
-      if (searchRef.current && !searchRef.current.contains(event.target)) {
-        setShowSearch(false);
-      }
+  // Data
+  const period = PERIOD_MAP[timeframe] ?? '1y'
+  const { ohlcv, quote, fundamentals, status, error, dataSource }
+    = useChartData(symbol, period)
+
+  // If real fetch failed, use mock as explicit fallback
+  const displayData = useMemo(() => {
+    if (status === 'success' && ohlcv.length > 0) return ohlcv
+    if (status === 'error' || status === 'idle') {
+      return getStockData(symbol) ?? []
     }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+    return ohlcv
+  }, [ohlcv, status, symbol])
 
-  const rawData = useMemo(() => getStockData(selectedSymbol), [selectedSymbol]);
-  
-  const filteredData = useMemo(() => {
-    if (!rawData || rawData.length === 0) return [];
-    let count = rawData.length;
-    if (timeframe === '1W') count = 5;
-    else if (timeframe === '1M') count = 22;
-    else if (timeframe === '3M') count = 65;
-    else if (timeframe === '6M') count = 130;
-    else if (timeframe === '1Y') count = 180;
-    return rawData.slice(-count);
-  }, [rawData, timeframe]);
-
+  // Indicator computation
   const chartData = useMemo(() => {
-    if (filteredData.length === 0) return [];
-    
-    const closes = filteredData.map(d => d.close);
-    const volumes = filteredData.map(d => d.volume);
-    
-    const ema20 = computeEMA(closes, 20);
-    const ema50 = computeEMA(closes, 50);
-    const ema200 = computeEMA(closes, 200);
-    const bBands = computeBollingerBands(closes);
-    const rsi = computeRSI(closes);
-    const macd = computeMACD(closes);
-    const volumeMA = computeVolumeMA(volumes);
-    
-    return filteredData.map((candle, i) => ({
+    if (!displayData.length) return []
+    const closes  = displayData.map(d => d.close)
+    const volumes = displayData.map(d => d.volume)
+
+    let ema20 = [], ema50 = [], ema200 = [], bb = [],
+        rsi = [], macd = [], volMA = []
+    try {
+      ema20  = computeEMA(closes, 20)
+      ema50  = computeEMA(closes, 50)
+      ema200 = computeEMA(closes, 200)
+      bb     = computeBollingerBands(closes)
+      rsi    = computeRSI(closes)
+      macd   = computeMACD(closes)
+      volMA  = computeVolumeMA(volumes)
+    } catch (e) {
+      console.warn('indicators.js error:', e.message)
+    }
+
+    return displayData.map((candle, i) => ({
       ...candle,
-      ema20:    ema20[i],
-      ema50:    ema50[i],
-      ema200:   ema200[i],
-      bbUpper:  bBands[i]?.upper,
-      bbMiddle: bBands[i]?.middle,
-      bbLower:  bBands[i]?.lower,
-      rsi:      rsi[i],
-      macdLine: macd[i]?.macd,
-      macdSig:  macd[i]?.signal,
-      macdHist: macd[i]?.histogram,
-      volumeMA: volumeMA[i],
-    }));
-  }, [filteredData]);
+      ema20:    ema20[i]  ?? null,
+      ema50:    ema50[i]  ?? null,
+      ema200:   ema200[i] ?? null,
+      bbUpper:  bb[i]?.upper  ?? null,
+      bbMiddle: bb[i]?.middle ?? null,
+      bbLower:  bb[i]?.lower  ?? null,
+      rsi:      rsi[i]  ?? null,
+      macdLine: macd[i]?.macd      ?? null,
+      macdSig:  macd[i]?.signal    ?? null,
+      macdHist: macd[i]?.histogram ?? null,
+      volMA:    volMA[i] ?? null,
+    }))
+  }, [displayData])
 
-  const quote = useMemo(() => getLatestQuote(selectedSymbol), [selectedSymbol]);
-  const patterns = useMemo(() => getPatterns(selectedSymbol), [selectedSymbol]);
-  
+  // Quote display values
+  const displayQuote = useMemo(() => {
+    if (quote && status === 'success') return quote
+    if (!displayData.length) return null
+    const last = displayData[displayData.length - 1]
+    const prev = displayData[displayData.length - 2] ?? last
+    return {
+      ltp:        last.close,
+      open:       last.open,
+      high:       last.high,
+      low:        last.low,
+      close:      last.close,
+      volume:     last.volume,
+      change:     parseFloat((last.close - prev.close).toFixed(2)),
+      change_pct: parseFloat(
+        (((last.close - prev.close) / prev.close) * 100).toFixed(2)
+      ),
+    }
+  }, [quote, displayData, status])
+
+  // Patterns
+  const patterns = getPatterns(symbol) ?? []
+
+  // Search filter
   const searchResults = useMemo(() => {
-    if (!searchQuery) return STOCK_LIST;
-    const q = searchQuery.toLowerCase();
-    return STOCK_LIST.filter(s => s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q));
-  }, [searchQuery]);
+    if (!search) return STOCK_LIST.slice(0, 8)
+    const q = search.toUpperCase()
+    return STOCK_LIST.filter(s =>
+      s.symbol.includes(q) || s.name.toUpperCase().includes(q)
+    ).slice(0, 8)
+  }, [search])
 
-  const toggleInd = (key) => setIndicators(prev => ({ ...prev, [key]: !prev[key] }));
+  // Helpers
+  function fmtPrice(v) {
+    if (v == null) return '—'
+    return Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })
+  }
+  function fmtVol(v) {
+    if (!v) return '—'
+    if (v >= 1e7) return `${(v/1e7).toFixed(2)}Cr`
+    if (v >= 1e5) return `${(v/1e5).toFixed(2)}L`
+    return `${(v/1e3).toFixed(1)}K`
+  }
 
-  const aggWinRate = patterns.length > 0 ? Math.round(patterns.reduce((sum, p) => sum + p.backtest.win_rate, 0) / patterns.length * 100) : 0;
-  const aggReturn = patterns.length > 0 ? (patterns.reduce((sum, p) => sum + p.backtest.avg_return_pct, 0) / patterns.length).toFixed(1) : 0;
+  // Candlestick custom shape
+  const CandlestickBar = (props) => {
+    const { x, width, payload } = props
+    if (!payload || !props.yAxis?.scale) return null
+    const { open, high, low, close } = payload
+    const scale  = props.yAxis.scale
+    const isBull = close >= open
+    const color  = isBull ? C.bull : C.bear
+    const yO = scale(open),  yC = scale(close)
+    const yH = scale(high),  yL = scale(low)
+    const top = Math.min(yO, yC)
+    const bot = Math.max(yO, yC)
+    const cx  = x + width / 2
+    return (
+      <g>
+        <line x1={cx} y1={yH} x2={cx} y2={top}
+              stroke={C.textSecond} strokeWidth={1}/>
+        <line x1={cx} y1={bot} x2={cx} y2={yL}
+              stroke={C.textSecond} strokeWidth={1}/>
+        <rect x={x+1} y={top} width={Math.max(width-2,1)}
+              height={Math.max(bot-top,1)}
+              fill={color} stroke={color} strokeWidth={0.5}/>
+      </g>
+    )
+  }
+
+  // Custom Tooltip
+  const ChartTooltip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null
+    const d = payload[0]?.payload
+    if (!d) return null
+    const isBull = d.close >= d.open
+    return (
+      <div style={{
+        background: C.bgElevated, border: `1px solid ${C.borderStrong}`,
+        borderRadius: 4, padding: '10px 14px', fontSize: 12,
+        color: C.textSecond, pointerEvents: 'none', minWidth: 160,
+      }}>
+        <div style={{ color: C.textPrimary, marginBottom: 6,
+                      fontSize: 11, fontWeight: 500 }}>{d.date}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr',
+                      gap: '3px 12px', fontFamily: MONO }}>
+          <span>O: <b style={{ color: C.textPrimary }}>{fmtPrice(d.open)}</b></span>
+          <span>H: <b style={{ color: C.bull }}>{fmtPrice(d.high)}</b></span>
+          <span>L: <b style={{ color: C.bear }}>{fmtPrice(d.low)}</b></span>
+          <span>C: <b style={{ color: isBull ? C.bull : C.bear }}>
+            {fmtPrice(d.close)}</b></span>
+        </div>
+        <div style={{ marginTop: 5, fontFamily: MONO, color: C.textMuted }}>
+          Vol: {fmtVol(d.volume)}
+        </div>
+      </div>
+    )
+  }
+
+  // Subchart label
+  const SubLabel = ({ text }) => (
+    <div style={{
+      fontSize: 10, fontWeight: 500, letterSpacing: '0.07em',
+      textTransform: 'uppercase', color: C.textMuted,
+      padding: '4px 8px 0',
+    }}>{text}</div>
+  )
+
+  // Y domain
+  const yMin = chartData.length
+    ? Math.min(...chartData.map(d => d.low))   * 0.995 : 0
+  const yMax = chartData.length
+    ? Math.max(...chartData.map(d => d.high))  * 1.005 : 100
+  const xInterval = Math.max(1, Math.floor(chartData.length / 8))
 
   return (
-    <div className="h-full w-full flex flex-col bg-[#131722] text-[#D1D4DC] overflow-hidden">
-      
-      {/* Top Toolbar */}
-      <div className="flex-none h-[48px] bg-[#1E222D] border-b border-[#2A2E39] flex items-center px-4 justify-between shrink-0 box-border">
-        <div className="flex items-center space-x-6">
-          
+    <div style={{ display: 'flex', height: '100%',
+                  background: C.bgPage, color: C.textPrimary }}>
+
+      {/* MAIN AREA */}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex',
+                    flexDirection: 'column', overflow: 'hidden' }}>
+
+        {/* TOOLBAR */}
+        <div style={{
+          height: 48, flexShrink: 0,
+          background: C.bgCard,
+          borderBottom: `1px solid ${C.border}`,
+          display: 'flex', alignItems: 'center',
+          padding: '0 12px', gap: 10,
+        }}>
+
           {/* Search */}
-          <div className="relative" ref={searchRef}>
-            <input 
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onFocus={() => setShowSearch(true)}
-              placeholder="Search symbol... e.g. RELIANCE"
-              className="w-[240px] h-[32px] bg-[#2A2E39] border border-[#363A45] rounded-sm px-3 text-[13px] text-[#D1D4DC] focus:outline-none focus:border-[#2962FF]"
+          <div style={{ position: 'relative' }}>
+            <input
+              value={search}
+              onChange={e => { setSearch(e.target.value); setShowDrop(true) }}
+              onFocus={() => setShowDrop(true)}
+              onBlur={() => setTimeout(() => setShowDrop(false), 150)}
+              placeholder="Search symbol… e.g. RELIANCE"
+              style={{
+                width: 220, height: 32,
+                background: C.bgElevated,
+                border: `1px solid ${C.borderStrong}`,
+                borderRadius: 4, padding: '0 10px',
+                fontSize: 13, color: C.textPrimary,
+                outline: 'none',
+              }}
             />
-            {showSearch && (
-              <div className="absolute top-[36px] left-0 w-full max-h-[200px] overflow-y-auto bg-[#1E222D] border border-[#2A2E39] rounded-sm z-50 shadow-xl">
-                {searchResults.length === 0 ? (
-                  <div className="p-3 text-[11px] text-[#787B86]">No results found</div>
-                ) : (
-                  searchResults.map(s => (
-                    <div 
-                      key={s.symbol}
-                      className="h-[36px] px-3 flex flex-col justify-center cursor-pointer hover:bg-[#2A2E39] border-b border-[#2A2E39] last:border-0"
-                      onClick={() => {
-                        setSelectedSymbol(s.symbol);
-                        setSearchQuery("");
-                        setShowSearch(false);
-                      }}
-                    >
-                      <div className="text-[13px] font-medium text-[#D1D4DC] leading-tight">{s.symbol}</div>
-                      <div className="text-[10px] text-[#787B86] leading-tight truncate">{s.name}</div>
-                    </div>
-                  ))
-                )}
+            {showDrop && searchResults.length > 0 && (
+              <div style={{
+                position: 'absolute', top: 36, left: 0, zIndex: 100,
+                width: 260, background: C.bgCard,
+                border: `1px solid ${C.border}`,
+                borderRadius: 4, overflow: 'hidden',
+                maxHeight: 240, overflowY: 'auto',
+              }}>
+                {searchResults.map(s => (
+                  <div key={s.symbol}
+                    onMouseDown={() => {
+                      setSymbol(s.symbol)
+                      setSearch('')
+                      setShowDrop(false)
+                    }}
+                    style={{
+                      padding: '7px 12px', cursor: 'pointer',
+                      borderBottom: `1px solid ${C.border}`,
+                    }}
+                    onMouseEnter={e =>
+                      e.currentTarget.style.background = C.bgHover}
+                    onMouseLeave={e =>
+                      e.currentTarget.style.background = 'transparent'}
+                  >
+                    <span style={{ fontFamily: MONO, fontSize: 12,
+                                   color: C.textPrimary, fontWeight: 500 }}>
+                      {s.symbol}
+                    </span>
+                    <span style={{ fontSize: 11, color: C.textSecond,
+                                   marginLeft: 8 }}>
+                      {s.name}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
           </div>
 
-          {/* Timeframe */}
-          <div className="flex items-center border border-[#2A2E39] rounded-sm overflow-hidden">
-            {['1W', '1M', '3M', '6M', '1Y'].map(tf => (
-              <button
-                key={tf}
+          {/* Timeframe buttons */}
+          <div style={{
+            display: 'flex', border: `1px solid ${C.border}`,
+            borderRadius: 4, overflow: 'hidden',
+          }}>
+            {Object.keys(PERIOD_MAP).map((tf, i, arr) => (
+              <button key={tf}
                 onClick={() => setTimeframe(tf)}
-                className={`h-[32px] px-3 text-[12px] font-medium border-r border-[#2A2E39] last:border-r-0 transition-colors ${
-                  timeframe === tf ? 'bg-[#1E2B4D] text-[#2962FF]' : 'bg-transparent text-[#787B86] hover:text-[#D1D4DC]'
-                }`}
-              >
-                {tf}
-              </button>
+                style={{
+                  height: 30, padding: '0 11px',
+                  background: timeframe === tf ? C.accentSubtle : 'transparent',
+                  color: timeframe === tf ? C.accent : C.textSecond,
+                  border: 'none',
+                  borderRight: i < arr.length - 1
+                    ? `1px solid ${C.border}` : 'none',
+                  fontSize: 12, cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >{tf}</button>
             ))}
+          </div>
+
+          {/* Indicator toggles */}
+          {[
+            ['EMA',  showEMA,  setShowEMA],
+            ['BB',   showBB,   setShowBB],
+            ['VOL',  showVol,  setShowVol],
+            ['RSI',  showRSI,  setShowRSI],
+            ['MACD', showMACD, setShowMACD],
+          ].map(([label, active, setter]) => (
+            <button key={label}
+              onClick={() => setter(v => !v)}
+              style={{
+                height: 28, padding: '0 10px',
+                background: active ? C.accentSubtle : 'transparent',
+                color: active ? C.accent : C.textSecond,
+                border: `1px solid ${active
+                  ? C.accent + '44' : C.border}`,
+                borderRadius: 3, fontSize: 11, cursor: 'pointer',
+                fontFamily: 'inherit', letterSpacing: '0.04em',
+              }}
+            >{label}</button>
+          ))}
+
+          {/* Data source badge */}
+          <div style={{ marginLeft: 'auto', display: 'flex',
+                        alignItems: 'center', gap: 5 }}>
+            <div style={{
+              width: 7, height: 7, borderRadius: '50%',
+              background: dataSource === 'live' ? C.bull : '#F59E0B',
+              flexShrink: 0,
+            }}/>
+            <span style={{ fontSize: 10, color: C.textMuted }}>
+              {dataSource === 'live' ? 'Live EOD' : 'Demo Data'}
+            </span>
           </div>
         </div>
 
-        {/* Indicators */}
-        <div className="flex items-center space-x-2">
-          {[
-            { key: 'showEMA', label: 'EMA' },
-            { key: 'showBB', label: 'BB' },
-            { key: 'showVOL', label: 'VOL' },
-          ].map(ind => (
-            <button
-              key={ind.key}
-              onClick={() => toggleInd(ind.key)}
-              className={`h-[28px] px-2.5 text-[11px] font-medium rounded-[3px] transition-colors border ${
-                indicators[ind.key] ? 'bg-[#1E2B4D] text-[#2962FF] border-[#2962FF33]' : 'bg-transparent text-[#787B86] border-[#2A2E39] hover:text-[#D1D4DC]'
-              }`}
-            >
-              {ind.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        
-        {/* Main Chart Area */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {/* Quote Bar */}
-          {quote && (
-            <div className="flex-none h-[36px] bg-[#131722] px-4 flex items-center space-x-6 shrink-0 border-b border-[#1E222D]">
-              <div className="flex items-center space-x-2">
-                <span className="font-semibold text-[14px]">{selectedSymbol}</span>
-                <span className="text-[12px] text-[#787B86]">{STOCK_LIST.find(s=>s.symbol===selectedSymbol)?.name}</span>
-              </div>
-              
-              <div className="flex items-center space-x-2 font-mono text-[13px]">
-                <span>₹{quote.close.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
-                <span className={quote.change >= 0 ? 'text-[#26A69A]' : 'text-[#EF5350]'}>
-                  {quote.change >= 0 ? '+' : ''}{quote.change.toFixed(2)}
+        {/* DEBUG / ERROR PANEL */}
+        {(status === 'error' || status === 'loading') && (
+          <div style={{
+            background: status === 'error' ? '#2D1A1A' : C.bgCard,
+            borderBottom: `1px solid ${
+              status === 'error' ? '#5C2828' : C.border}`,
+            padding: '6px 16px', fontSize: 11,
+            color: C.textSecond,
+            display: 'flex', alignItems: 'center', gap: 12,
+          }}>
+            {status === 'loading' && (
+              <>
+                <div style={{
+                  width: 10, height: 10, borderRadius: '50%',
+                  border: `2px solid ${C.border}`,
+                  borderTopColor: C.accent,
+                  animation: 'spin 0.8s linear infinite',
+                  flexShrink: 0,
+                }}/>
+                <span>Fetching {symbol} data from Yahoo Finance…</span>
+              </>
+            )}
+            {status === 'error' && (
+              <>
+                <span style={{ color: C.bear, fontWeight: 600 }}>
+                  API Error:
                 </span>
-                <span className={quote.change >= 0 ? 'text-[#26A69A]' : 'text-[#EF5350]'}>
-                  ({quote.change >= 0 ? '+' : ''}{quote.change_pct.toFixed(2)}%)
+                <span style={{ color: '#F87171' }}>{error}</span>
+                <span style={{ color: C.textMuted }}>
+                  — showing demo data
                 </span>
-              </div>
+                <button
+                  onClick={() => {
+                    const s = symbol
+                    setSymbol('')
+                    setTimeout(() => setSymbol(s), 50)
+                  }}
+                  style={{
+                    marginLeft: 'auto', fontSize: 11,
+                    color: C.accent, background: 'none',
+                    border: `1px solid ${C.accent}44`,
+                    borderRadius: 3, padding: '2px 10px',
+                    cursor: 'pointer',
+                  }}
+                >Retry</button>
+              </>
+            )}
+          </div>
+        )}
 
-              <div className="flex items-center space-x-4 font-mono text-[11px] text-[#787B86]">
-                <span>O: <span className="text-[#D1D4DC]">{quote.open.toFixed(2)}</span></span>
-                <span>H: <span className="text-[#D1D4DC]">{quote.high.toFixed(2)}</span></span>
-                <span>L: <span className="text-[#D1D4DC]">{quote.low.toFixed(2)}</span></span>
-                <span>C: <span className="text-[#D1D4DC]">{quote.close.toFixed(2)}</span></span>
-                <span>Vol: <span className="text-[#D1D4DC]">{(quote.volume / 100000).toFixed(2)}L</span></span>
-              </div>
+        {/* QUOTE BAR */}
+        {displayQuote && (
+          <div style={{
+            height: 40, flexShrink: 0,
+            background: C.bgPage,
+            borderBottom: `1px solid ${C.border}`,
+            display: 'flex', alignItems: 'center',
+            padding: '0 16px', gap: 16,
+            fontFamily: MONO, fontSize: 12,
+          }}>
+            <span style={{ fontSize: 14, fontWeight: 600,
+                           color: C.textPrimary }}>{symbol}</span>
+            <span style={{ fontSize: 11, color: C.textSecond,
+                           fontFamily: 'inherit' }}>
+              {fundamentals?.company_name ??
+               STOCK_LIST.find(s => s.symbol === symbol)?.name ?? ''}
+            </span>
+            <span style={{ fontSize: 18, color: C.textPrimary,
+                           marginLeft: 4 }}>
+              ₹{fmtPrice(displayQuote.ltp)}
+            </span>
+            <span style={{
+              color: displayQuote.change_pct >= 0 ? C.bull : C.bear,
+            }}>
+              {displayQuote.change_pct >= 0 ? '+' : ''}
+              {fmtPrice(displayQuote.change)} (
+              {displayQuote.change_pct >= 0 ? '+' : ''}
+              {displayQuote.change_pct?.toFixed(2)}%)
+            </span>
+            {[
+              ['O', displayQuote.open],
+              ['H', displayQuote.high],
+              ['L', displayQuote.low],
+              ['C', displayQuote.close],
+            ].map(([label, val]) => (
+              <span key={label} style={{ color: C.textSecond }}>
+                {label}:{' '}
+                <span style={{ color: C.textPrimary }}>
+                  ₹{fmtPrice(val)}
+                </span>
+              </span>
+            ))}
+            <span style={{ color: C.textSecond }}>
+              Vol:{' '}
+              <span style={{ color: C.textPrimary }}>
+                {fmtVol(displayQuote.volume)}
+              </span>
+            </span>
+            {fundamentals?.['52w_high'] && (
+              <>
+                <span style={{ color: C.textSecond }}>
+                  52W H:{' '}
+                  <span style={{ color: C.bull }}>
+                    ₹{fmtPrice(fundamentals['52w_high'])}
+                  </span>
+                </span>
+                <span style={{ color: C.textSecond }}>
+                  52W L:{' '}
+                  <span style={{ color: C.bear }}>
+                    ₹{fmtPrice(fundamentals['52w_low'])}
+                  </span>
+                </span>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* CHARTS */}
+        <div style={{ flex: 1, overflow: 'auto', padding: '0 0 16px' }}>
+
+          {/* Loading skeleton */}
+          {status === 'loading' && !chartData.length && (
+            <div style={{ padding: 16 }}>
+              {[400, 80, 80, 80].map((h, i) => (
+                <div key={i} style={{
+                  height: h, background: C.bgCard,
+                  borderRadius: 4, marginBottom: 8,
+                  animation: 'pulse 1.4s ease-in-out infinite',
+                  animationDelay: `${i * 0.1}s`,
+                }}/>
+              ))}
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto overflow-x-hidden p-2">
-            <CandlestickChart 
-              data={chartData} 
-              indicators={{
-                showEMA20: indicators.showEMA,
-                showEMA50: indicators.showEMA,
-                showEMA200: indicators.showEMA,
-                showBollinger: indicators.showBB,
-                showVolume: indicators.showVOL
-              }} 
-            />
-          </div>
+          {chartData.length > 0 && (
+            <>
+              {/* Price chart */}
+              <SubLabel text={`PRICE — ${symbol} (${timeframe})`} />
+              <ResponsiveContainer width="100%" height={380}>
+                <ComposedChart data={chartData}
+                  margin={{ top: 8, right: 60, bottom: 0, left: 0 }}>
+                  <CartesianGrid vertical={false}
+                    stroke={C.bgCard} strokeDasharray="0"/>
+                  <XAxis dataKey="date"
+                    tick={{ fill: C.textMuted, fontSize: 10 }}
+                    tickLine={false} axisLine={false}
+                    interval={xInterval}
+                    tickFormatter={d => {
+                      const dt = new Date(d)
+                      return dt.toLocaleDateString('en-IN',
+                        { day: '2-digit', month: 'short' })
+                    }}
+                  />
+                  <YAxis orientation="right"
+                    domain={[yMin, yMax]}
+                    tick={{ fill: C.textMuted, fontSize: 10 }}
+                    tickLine={false} axisLine={false}
+                    tickFormatter={v =>
+                      `₹${v.toLocaleString('en-IN',
+                        { maximumFractionDigits: 0 })}`}
+                    width={72}
+                  />
+                  <Tooltip content={<ChartTooltip />}
+                    cursor={{ stroke: C.borderStrong, strokeWidth: 1 }}/>
+                  <Bar dataKey="close" shape={<CandlestickBar />}
+                    isAnimationActive={false}/>
+                  {showEMA && <>
+                    <Line type="monotone" dataKey="ema20"
+                      stroke={C.ema20} strokeWidth={1}
+                      dot={false} isAnimationActive={false}
+                      connectNulls name="EMA 20"/>
+                    <Line type="monotone" dataKey="ema50"
+                      stroke={C.ema50} strokeWidth={1.5}
+                      dot={false} isAnimationActive={false}
+                      connectNulls name="EMA 50"/>
+                    <Line type="monotone" dataKey="ema200"
+                      stroke={C.ema200} strokeWidth={1.5}
+                      dot={false} isAnimationActive={false}
+                      connectNulls name="EMA 200"/>
+                  </>}
+                  {showBB && <>
+                    <Line type="monotone" dataKey="bbUpper"
+                      stroke={C.bbColor} strokeWidth={0.5}
+                      strokeDasharray="3 3"
+                      dot={false} isAnimationActive={false}
+                      connectNulls/>
+                    <Line type="monotone" dataKey="bbMiddle"
+                      stroke={C.bbColor} strokeWidth={0.5}
+                      dot={false} isAnimationActive={false}
+                      connectNulls/>
+                    <Line type="monotone" dataKey="bbLower"
+                      stroke={C.bbColor} strokeWidth={0.5}
+                      strokeDasharray="3 3"
+                      dot={false} isAnimationActive={false}
+                      connectNulls/>
+                  </>}
+                </ComposedChart>
+              </ResponsiveContainer>
+
+              {/* Volume chart */}
+              {showVol && <>
+                <SubLabel text="VOLUME" />
+                <ResponsiveContainer width="100%" height={72}>
+                  <ComposedChart data={chartData}
+                    margin={{ top: 0, right: 60, bottom: 0, left: 0 }}>
+                    <CartesianGrid vertical={false} stroke={C.bgCard}/>
+                    <YAxis orientation="right" width={72}
+                      tick={{ fill: C.textMuted, fontSize: 9 }}
+                      tickLine={false} axisLine={false}
+                      tickFormatter={v => fmtVol(v)}/>
+                    <Bar dataKey="volume" isAnimationActive={false}
+                      fill={C.bull + '33'}
+                      stroke={C.bull} strokeWidth={0.5}/>
+                    <Line type="monotone" dataKey="volMA"
+                      stroke={C.textSecond} strokeWidth={1}
+                      dot={false} isAnimationActive={false}
+                      connectNulls/>
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </>}
+
+              {/* RSI chart */}
+              {showRSI && <>
+                <SubLabel text="RSI (14)" />
+                <ResponsiveContainer width="100%" height={72}>
+                  <ComposedChart data={chartData}
+                    margin={{ top: 0, right: 60, bottom: 0, left: 0 }}>
+                    <CartesianGrid vertical={false} stroke={C.bgCard}/>
+                    <YAxis orientation="right" domain={[0, 100]}
+                      width={72} ticks={[30, 50, 70]}
+                      tick={{ fill: C.textMuted, fontSize: 9 }}
+                      tickLine={false} axisLine={false}/>
+                    <ReferenceLine y={70}
+                      stroke={C.bear + '55'} strokeDasharray="3 3"/>
+                    <ReferenceLine y={30}
+                      stroke={C.bull + '55'} strokeDasharray="3 3"/>
+                    <ReferenceLine y={50} stroke={C.border}/>
+                    <Line type="monotone" dataKey="rsi"
+                      stroke={C.accent} strokeWidth={1.2}
+                      dot={false} isAnimationActive={false}
+                      connectNulls/>
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </>}
+
+              {/* MACD chart */}
+              {showMACD && <>
+                <SubLabel text="MACD (12, 26, 9)" />
+                <ResponsiveContainer width="100%" height={72}>
+                  <ComposedChart data={chartData}
+                    margin={{ top: 0, right: 60, bottom: 0, left: 0 }}>
+                    <CartesianGrid vertical={false} stroke={C.bgCard}/>
+                    <YAxis orientation="right" width={72}
+                      tick={{ fill: C.textMuted, fontSize: 9 }}
+                      tickLine={false} axisLine={false}
+                      tickFormatter={v => v.toFixed(1)}/>
+                    <ReferenceLine y={0} stroke={C.borderStrong}/>
+                    <Bar dataKey="macdHist" isAnimationActive={false}
+                      fill={C.bull + '55'}/>
+                    <Line type="monotone" dataKey="macdLine"
+                      stroke={C.accent} strokeWidth={1.2}
+                      dot={false} isAnimationActive={false}
+                      connectNulls/>
+                    <Line type="monotone" dataKey="macdSig"
+                      stroke={C.ema20} strokeWidth={1}
+                      dot={false} isAnimationActive={false}
+                      connectNulls/>
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </>}
+            </>
+          )}
         </div>
-
-        {/* Pattern Panel right side */}
-        <div className="w-[280px] flex-none bg-[#1E222D] border-l border-[#2A2E39] flex flex-col overflow-hidden shrink-0">
-          <div className="p-4 flex-1 flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-[10px] font-medium tracking-[0.08em] uppercase text-[#4C525E]">PATTERNS DETECTED</span>
-              <span className="bg-[#1E2B4D] text-[#2962FF] rounded-[3px] text-[10px] px-1.5 py-[1px] font-mono">
-                {patterns.length}
-              </span>
-            </div>
-
-            <div className="flex-1 overflow-y-auto custom-scrollbar">
-              {patterns.length === 0 ? (
-                <div className="text-[12px] text-[#787B86]">No patterns detected for {selectedSymbol}</div>
-              ) : (
-                <PatternPanel patterns={patterns} onPatternClick={setSelectedPattern} />
-              )}
-            </div>
-
-            {/* Backtest summary footer */}
-            <div className="mt-4 pt-4 border-t border-[#2A2E39]">
-              <div className="text-[10px] font-medium tracking-[0.08em] uppercase text-[#4C525E] mb-3">BACKTEST SUMMARY</div>
-              <div className="grid grid-cols-2 gap-y-3 gap-x-2 text-[11px]">
-                <div className="text-[#787B86]">Avg Win Rate:</div>
-                <div className="text-[#D1D4DC] font-mono text-right">{aggWinRate}%</div>
-                <div className="text-[#787B86]">Exp. Return:</div>
-                <div className={`font-mono text-right ${aggReturn >= 0 ? 'text-[#26A69A]' : 'text-[#EF5350]'}`}>
-                  {aggReturn >= 0 ? '+' : ''}{aggReturn}%
-                </div>
-                <div className="text-[#787B86]">Signals (30d):</div>
-                <div className="text-[#D1D4DC] font-mono text-right">3</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
       </div>
 
-      {/* Pattern Modal Overlay */}
-      {selectedPattern && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm">
-          <div className="bg-[#1E222D] border border-[#2A2E39] rounded-sm w-[480px] max-h-[80vh] overflow-y-auto flex flex-col relative shadow-2xl">
-            <button 
-              className="absolute top-4 right-4 text-[#787B86] hover:text-[#D1D4DC] text-lg leading-none"
-              onClick={() => setSelectedPattern(null)}
-            >
-              &times;
-            </button>
-            <div className="p-6">
-              <div className="flex items-center space-x-3 mb-1">
-                <span className="text-[#D1D4DC] text-lg font-semibold">{selectedPattern.symbol}</span>
-                <span className={`text-[10px] px-2 py-0.5 rounded-sm font-medium ${selectedPattern.direction === 'BULLISH' ? 'bg-[#26A69A1A] text-[#26A69A]' : 'bg-[#EF53501A] text-[#EF5350]'}`}>
-                  {selectedPattern.direction === 'BULLISH' ? '▲ BULLISH' : '▼ BEARISH'}
-                </span>
-              </div>
-              <div className="text-[#787B86] text-[13px] mb-6">{selectedPattern.pattern_type.replace(/_/g, ' ')} · Detected on {new Date(selectedPattern.detected_on).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year:'numeric'})}</div>
+      {/* PATTERN PANEL */}
+      <div style={{
+        width: 272, flexShrink: 0,
+        background: C.bgCard,
+        borderLeft: `1px solid ${C.border}`,
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          padding: '10px 12px 8px',
+          borderBottom: `1px solid ${C.border}`,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <span style={{ fontSize: 10, fontWeight: 500,
+                         letterSpacing: '0.07em',
+                         textTransform: 'uppercase',
+                         color: C.textMuted }}>
+            PATTERNS DETECTED
+          </span>
+          <span style={{
+            background: C.accentSubtle, color: C.accent,
+            borderRadius: 3, fontSize: 10,
+            padding: '1px 6px', fontWeight: 500,
+          }}>{patterns.length}</span>
+        </div>
 
-              <div className="text-[10px] font-medium tracking-[0.08em] uppercase text-[#4C525E] mb-2">AI ANALYSIS</div>
-              <p className="text-[#D1D4DC] text-[13px] leading-relaxed mb-6">
-                {selectedPattern.description}
-              </p>
-
-              <div className="text-[10px] font-medium tracking-[0.08em] uppercase text-[#4C525E] mb-2">KEY LEVELS</div>
-              <div className="grid grid-cols-2 gap-3 mb-6 font-mono text-[12px]">
-                <div className="flex justify-between bg-[#2A2E39] p-3 rounded-sm border border-[#363A45]">
-                  <span className="text-[#26A69A]">Support</span>
-                  <span className="text-[#D1D4DC]">₹{selectedPattern.key_levels.support.toLocaleString('en-IN')}</span>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {patterns.length === 0 ? (
+            <div style={{ padding: 16, fontSize: 12,
+                          color: C.textMuted, textAlign: 'center' }}>
+              No patterns detected for {symbol}
+            </div>
+          ) : patterns.map(p => {
+            const isBull = p.direction === 'BULLISH'
+            const conf   = Math.round((p.confidence ?? 0) * 100)
+            const confColor = conf >= 70 ? C.bull
+                            : conf >= 50 ? '#F59E0B' : C.bear
+            return (
+              <div key={p.id} style={{
+                borderLeft: `2px solid ${isBull ? C.bull : C.bear}`,
+                borderBottom: `1px solid ${C.border}`,
+                padding: '10px 12px',
+              }}>
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  alignItems: 'center', marginBottom: 6,
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 600,
+                                 color: C.textPrimary }}>
+                    {p.pattern_type.replace(/_/g, ' ')}
+                  </span>
+                  <span style={{
+                    fontSize: 10, padding: '1px 6px', borderRadius: 3,
+                    background: (isBull ? C.bull : C.bear) + '1A',
+                    color: isBull ? C.bull : C.bear,
+                  }}>
+                    {isBull ? '▲' : '▼'} {p.direction}
+                  </span>
                 </div>
-                <div className="flex justify-between bg-[#2A2E39] p-3 rounded-sm border border-[#363A45]">
-                  <span className="text-[#EF5350]">Resistance</span>
-                  <span className="text-[#D1D4DC]">₹{selectedPattern.key_levels.resistance.toLocaleString('en-IN')}</span>
-                </div>
-                <div className="flex justify-between bg-[#2A2E39] p-3 rounded-sm border border-[#363A45]">
-                  <span className="text-[#2962FF]">Target</span>
-                  <span className="text-[#D1D4DC]">₹{selectedPattern.key_levels.target.toLocaleString('en-IN')}</span>
-                </div>
-                <div className="flex justify-between bg-[#2A2E39] p-3 rounded-sm border border-[#363A45]">
-                  <span className="text-[#EF5350]">Stop Loss</span>
-                  <span className="text-[#D1D4DC]">₹{selectedPattern.key_levels.stop_loss.toLocaleString('en-IN')}</span>
-                </div>
-              </div>
-
-              <div className="text-[10px] font-medium tracking-[0.08em] uppercase text-[#4C525E] mb-2">BACKTEST PERFORMANCE</div>
-              <div className="grid grid-cols-2 gap-3 font-mono text-[12px]">
-                <div className="bg-[#2A2E39] p-3 rounded-sm border border-[#363A45]">
-                  <div className="text-[#787B86] text-[10px] mb-1">WIN RATE</div>
-                  <div className="text-[#D1D4DC]">{Math.round(selectedPattern.backtest.win_rate * 100)}%</div>
-                </div>
-                <div className="bg-[#2A2E39] p-3 rounded-sm border border-[#363A45]">
-                  <div className="text-[#787B86] text-[10px] mb-1">AVG RETURN</div>
-                  <div className={selectedPattern.backtest.avg_return_pct > 0 ? 'text-[#26A69A]' : 'text-[#EF5350]'}>
-                    {selectedPattern.backtest.avg_return_pct > 0 ? '+' : ''}{selectedPattern.backtest.avg_return_pct}%
+                <div style={{ marginBottom: 4 }}>
+                  <div style={{ height: 3, background: C.bgElevated,
+                                borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{
+                      height: '100%', width: `${conf}%`,
+                      background: confColor,
+                    }}/>
+                  </div>
+                  <div style={{ fontSize: 10, color: C.textMuted,
+                                fontFamily: MONO, marginTop: 2 }}>
+                    {conf}% confidence
                   </div>
                 </div>
-                <div className="bg-[#2A2E39] p-3 rounded-sm border border-[#363A45]">
-                  <div className="text-[#787B86] text-[10px] mb-1">AVG DAYS TO TARGET</div>
-                  <div className="text-[#D1D4DC]">{selectedPattern.backtest.avg_days}</div>
+                <div style={{ fontSize: 11, color: C.textSecond,
+                              marginBottom: 6, lineHeight: 1.5,
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical',
+                              overflow: 'hidden' }}>
+                  {p.description}
                 </div>
-                <div className="bg-[#2A2E39] p-3 rounded-sm border border-[#363A45]">
-                  <div className="text-[#787B86] text-[10px] mb-1">SAMPLE SIZE</div>
-                  <div className="text-[#D1D4DC]">{selectedPattern.backtest.sample_size} occurrences</div>
-                </div>
+                {p.backtest && (
+                  <div style={{ fontSize: 10, color: C.textMuted,
+                                fontFamily: MONO }}>
+                    Win rate:{' '}
+                    <span style={{ color: C.bull }}>
+                      {Math.round(p.backtest.win_rate * 100)}%
+                    </span>
+                    {' · '}Avg:{' '}
+                    <span style={{ color: C.bull }}>
+                      +{p.backtest.avg_return_pct}%
+                    </span>
+                    {' · '}{p.backtest.sample_size} trades
+                  </div>
+                )}
+                {p.key_levels && (
+                  <div style={{ marginTop: 6, fontSize: 10,
+                                display: 'flex', gap: 8,
+                                flexWrap: 'wrap', fontFamily: MONO }}>
+                    <span style={{ color: C.bull }}>
+                      S: ₹{fmtPrice(p.key_levels.support)}
+                    </span>
+                    <span style={{ color: C.bear }}>
+                      R: ₹{fmtPrice(p.key_levels.resistance)}
+                    </span>
+                    <span style={{ color: C.accent }}>
+                      T: ₹{fmtPrice(p.key_levels.target)}
+                    </span>
+                  </div>
+                )}
               </div>
-            </div>
-          </div>
+            )
+          })}
         </div>
-      )}
+
+        {fundamentals && (
+          <div style={{
+            borderTop: `1px solid ${C.border}`,
+            padding: '10px 12px',
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 500,
+                          letterSpacing: '0.07em',
+                          textTransform: 'uppercase',
+                          color: C.textMuted, marginBottom: 8 }}>
+              FUNDAMENTALS
+            </div>
+            {[
+              ['P/E Ratio',  fundamentals.pe_ratio?.toFixed(1)],
+              ['P/B Ratio',  fundamentals.pb_ratio?.toFixed(2)],
+              ['Mkt Cap',    fundamentals.market_cap_cr
+                ? `₹${(fundamentals.market_cap_cr/100).toFixed(0)}K Cr`
+                : null],
+              ['Beta',       fundamentals.beta?.toFixed(2)],
+            ].filter(([, v]) => v != null).map(([label, val]) => (
+              <div key={label} style={{
+                display: 'flex', justifyContent: 'space-between',
+                fontSize: 11, marginBottom: 4,
+              }}>
+                <span style={{ color: C.textSecond }}>{label}</span>
+                <span style={{ fontFamily: MONO,
+                               color: C.textPrimary }}>{val}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
-  );
+  )
 }

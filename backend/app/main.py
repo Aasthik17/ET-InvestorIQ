@@ -22,6 +22,7 @@ from app.modules.chart_pattern.router    import router as charts_router
 from app.modules.market_chat.router      import router as chat_router
 from app.modules.video_engine.router     import router as video_router
 from app.modules.live_prices.router      import router as live_router
+from app.modules.chart_direct            import router as chart_direct_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -200,6 +201,7 @@ app.include_router(charts_router)
 app.include_router(chat_router)
 app.include_router(video_router)
 app.include_router(live_router)  # WebSocket price streaming
+app.include_router(chart_direct_router)
 
 # ─── Static files for generated videos ───────────────────────────────────────
 

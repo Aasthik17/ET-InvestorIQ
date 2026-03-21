@@ -7,25 +7,18 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target:       'http://127.0.0.1:8000',
         changeOrigin: true,
-        secure: false,
-      },
-      '/ws': {
-        target:      'ws://127.0.0.1:8000',
-        ws:          true,          // Critical: enables WebSocket upgrade
-        changeOrigin: true,
-        secure: false,
-      },
-      '/videos': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true,
-        secure: false,
+        secure:       false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => {
+            console.log('[Vite proxy error]', err.message)
+          })
+          proxy.on('proxyReq', (_, req) => {
+            console.log('[Proxy ->]', req.method, req.url)
+          })
+        },
       },
     },
-  },
-  build: {
-    outDir: 'dist',
-    sourcemap: false,
   },
 })
