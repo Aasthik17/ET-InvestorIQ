@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from app.config import settings
+from app.agent.router import router as agent_router
 from app.modules.opportunity_radar.router import router as radar_router
 from app.modules.chart_pattern.router    import router as charts_router
 from app.modules.market_chat.router      import router as chat_router
@@ -197,6 +198,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ─── Register module routers ──────────────────────────────────────────────────
 
 app.include_router(radar_router)
+app.include_router(agent_router)
 app.include_router(charts_router)
 app.include_router(chat_router)
 app.include_router(video_router)

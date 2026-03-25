@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
 import {
   useRadarData, useInsiderTrades, useBulkDeals, useFilings
 } from '../hooks/useMarketData'
+import AgentTracePanel from '../components/agent/AgentTracePanel'
 import {
   formatPrice, formatCrores, formatPct, formatRelativeTime,
   formatIndianNumber, formatShortDate
@@ -58,7 +59,7 @@ function DirectionBadge({ dir }) {
 
 // ─── Stats Bar ────────────────────────────────────────────────────────────────
 
-function StatsBar({ radarData }) {
+function StatsBar({ radarData, onToggleAgent }) {
   const signals = radarData?.signals || []
   const total   = radarData?.total   || signals.length
   const bullish = signals.filter(s => (s.expected_impact || '').toUpperCase() === 'BULLISH').length
@@ -82,6 +83,22 @@ function StatsBar({ radarData }) {
           Refreshed {age}
         </span>
       )}
+      <button
+        onClick={onToggleAgent}
+        style={{
+          height: 32,
+          background: '#2962FF',
+          color: '#D1D4DC',
+          borderRadius: 4,
+          fontSize: 12,
+          padding: '0 16px',
+          fontWeight: 500,
+          cursor: 'pointer',
+          border: 'none',
+        }}
+      >
+        ▶ Run Agent
+      </button>
     </div>
   )
 }
@@ -190,6 +207,133 @@ function SignalRow({ signal }) {
               {signal.stop_loss && <span>Stop Loss: <strong className="price text-bear">{formatPrice(signal.stop_loss)}</strong></span>}
             </div>
           )}
+        </div>
+      )}
+    </>
+  )
+}
+
+function AgentAlertRow({ alert }) {
+  const [expanded, setExpanded] = useState(false)
+  const action = (alert.action || 'WATCH').toUpperCase()
+  const actionColor = action.includes('BUY') ? '#26A69A'
+    : action.includes('SELL') ? '#EF5350'
+      : '#787B86'
+  const score = Math.round(((alert.scores?.personalised_score || 0) * 100))
+
+  return (
+    <>
+      <div
+        onClick={() => setExpanded(v => !v)}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '80px 80px 1fr 72px 52px 20px',
+          alignItems: 'center',
+          gap: 8,
+          padding: '7px 12px',
+          borderBottom: '1px solid var(--border-primary)',
+          borderLeft: '3px solid #2962FF',
+          cursor: 'pointer',
+          background: expanded ? 'rgba(41,98,255,0.08)' : 'transparent',
+          transition: 'background 0.1s',
+        }}
+      >
+        <span className="price" style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>
+          {alert.symbol}
+        </span>
+
+        <span style={{
+          fontSize: 9,
+          padding: '2px 5px',
+          borderRadius: 2,
+          background: 'rgba(41,98,255,0.12)',
+          color: '#2962FF',
+          border: '1px solid rgba(41,98,255,0.35)',
+          letterSpacing: '0.05em',
+          textTransform: 'uppercase',
+          fontWeight: 700,
+          whiteSpace: 'nowrap',
+        }}>
+          AGENT
+        </span>
+
+        <div style={{ minWidth: 0 }}>
+          <div style={{
+            fontSize: 11,
+            color: 'var(--text-primary)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}>
+            {alert.headline}
+          </div>
+          <div style={{ marginTop: 3, fontSize: 10, color: 'var(--text-muted)' }}>
+            {alert.company_name} {alert.conviction ? `· ${alert.conviction}` : ''}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <div style={{
+            height: 3,
+            background: 'var(--border-primary)',
+            borderRadius: 2,
+            overflow: 'hidden',
+          }}>
+            <div style={{ width: `${score}%`, height: '100%', background: '#2962FF', borderRadius: 2 }} />
+          </div>
+          <span className="price" style={{ fontSize: 9, color: '#2962FF' }}>{score}%</span>
+        </div>
+
+        <span style={{
+          fontSize: 9,
+          padding: '2px 5px',
+          borderRadius: 2,
+          background: `${actionColor}14`,
+          color: actionColor,
+          border: `1px solid ${actionColor}55`,
+          letterSpacing: '0.05em',
+          textTransform: 'uppercase',
+          fontWeight: 600,
+          whiteSpace: 'nowrap',
+        }}>
+          {action}
+        </span>
+
+        <span style={{ color: 'var(--text-muted)' }}>
+          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </span>
+      </div>
+
+      {expanded && (
+        <div style={{
+          padding: '10px 16px 12px',
+          background: 'rgba(41,98,255,0.06)',
+          borderBottom: '1px solid var(--border-primary)',
+          borderLeft: '3px solid #2962FF',
+          fontSize: 11,
+          color: 'var(--text-secondary)',
+          lineHeight: 1.6,
+        }}>
+          {alert.portfolio_note && (
+            <div style={{ marginBottom: 8, fontStyle: 'italic' }}>{alert.portfolio_note}</div>
+          )}
+
+          <div>{alert.reasoning}</div>
+
+          <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            {alert.trade_levels?.entry_low != null && alert.trade_levels?.entry_high != null && (
+              <span>Entry: <strong className="price" style={{ color: '#2962FF' }}>
+                ₹{alert.trade_levels.entry_low} - ₹{alert.trade_levels.entry_high}
+              </strong></span>
+            )}
+            {alert.trade_levels?.target != null && (
+              <span>Target: <strong className="price text-bull">₹{alert.trade_levels.target}</strong></span>
+            )}
+            {alert.trade_levels?.stop_loss != null && (
+              <span>Stop Loss: <strong className="price text-bear">₹{alert.trade_levels.stop_loss}</strong></span>
+            )}
+            {alert.trade_levels?.horizon && <span>Horizon: <strong>{alert.trade_levels.horizon}</strong></span>}
+          </div>
         </div>
       )}
     </>
@@ -357,6 +501,12 @@ const TABS = [
 
 export default function OpportunityRadar() {
   const [activeTab, setActiveTab] = useState('signals')
+  const [showAgent, setShowAgent] = useState(false)
+  const [agentAlerts, setAgentAlerts] = useState([])
+  const [portfolio, setPortfolio] = useState({
+    holdings: [],
+    risk_profile: 'MODERATE',
+  })
 
   // Filters for signals tab
   const [dirFilter,  setDirFilter]  = useState('')
@@ -392,7 +542,21 @@ export default function OpportunityRadar() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
 
       {/* Stats bar */}
-      <StatsBar radarData={radarQ.data} />
+      <StatsBar radarData={radarQ.data} onToggleAgent={() => setShowAgent(v => !v)} />
+
+      {showAgent && (
+        <div style={{ padding: '12px', borderBottom: '1px solid var(--border-primary)', background: 'var(--bg-primary)' }}>
+          <AgentTracePanel
+            pipeline="Opportunity Radar"
+            endpoint="/api/agent/radar/stream"
+            payload={{ portfolio }}
+            onAlerts={(alerts) => {
+              setAgentAlerts(alerts)
+            }}
+            onComplete={(run) => console.log('Agent run complete:', run.run_id)}
+          />
+        </div>
+      )}
 
       {/* Tab bar */}
       <div style={{
@@ -483,8 +647,13 @@ export default function OpportunityRadar() {
 
         {/* Signals */}
         {activeTab === 'signals' && !activeQuery?.isLoading && (
-          signals.length > 0
-            ? signals.map(s => <SignalRow key={s.signal_id || s.id} signal={s} />)
+          (agentAlerts.length > 0 || signals.length > 0)
+            ? (
+              <>
+                {agentAlerts.map(alert => <AgentAlertRow key={`${alert.symbol}-${alert.rank}`} alert={alert} />)}
+                {signals.map(s => <SignalRow key={s.signal_id || s.id} signal={s} />)}
+              </>
+            )
             : <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No signals found</div>
         )}
 
