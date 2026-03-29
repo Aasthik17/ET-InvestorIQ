@@ -231,39 +231,74 @@ async def step_enrich_with_context(ctx: AgentContext) -> AgentContext:
     """
     For each top signal, call Claude to add context on why the signal matters.
     Enriches top 5 signals only for cost control.
+
+    Scenario 1 (Hackathon): For BULK_DEAL promoter distress signals, also
+    attaches the nearest corporate filing as a citation (using filing_matcher).
     """
 
     from app.services.claude_service import analyze_signal
     from app.services.data_service import get_fundamentals
+    from app.services.filing_matcher import match_filing_to_deal
 
     indices = ctx.raw_data.get("indices", {})
     nifty_change = float(((indices.get("nifty50") or {}).get("change_pct")) or 0)
     market_mood = "bullish" if nifty_change > 0.5 else "bearish" if nifty_change < -0.5 else "flat"
 
+    all_filings = ctx.raw_data.get("filings", [])
     enriched: list[dict] = []
+
     for signal in ctx.signals[:5]:
         fundamentals: dict[str, Any] = {}
         analysis = "Analysis unavailable."
+        filing_citation = None
 
         try:
             fundamentals = await get_fundamentals(signal.symbol)
         except Exception as exc:
             logger.warning("Fundamentals fetch failed for %s: %s", signal.symbol, exc)
 
+        # ── Scenario 1: Filing citation for promoter distress signals ─────────
+        raw = signal.raw_data or {}
+        deal_class = raw.get("deal_class", "")
+        distress_prob = float(raw.get("distress_probability", 0.0))
+
+        if str(signal.signal_type) in ("SignalType.BULK_DEAL", "BULK_DEAL") and distress_prob > 0.3:
+            try:
+                citation = match_filing_to_deal(
+                    symbol=signal.symbol,
+                    deal_date=signal.signal_date,
+                    filings=all_filings,
+                    window_days=3,
+                )
+                if citation:
+                    filing_citation = citation
+            except Exception as exc:
+                logger.warning("Filing match failed for %s: %s", signal.symbol, exc)
+
+        # ── Claude enrichment ─────────────────────────────────────────────────
         try:
+            signal_payload: dict[str, Any] = {
+                "symbol": signal.symbol,
+                "signal_type": str(signal.signal_type),
+                "headline": signal.headline,
+                "detail": signal.detail,
+                "confidence": signal.confidence_score,
+                "expected_impact": str(signal.expected_impact),
+                "market_mood": market_mood,
+                "nifty_change_pct": nifty_change,
+                "fundamentals": fundamentals,
+                "signal_date": signal.signal_date,
+            }
+            # Inject distress data so Claude can produce filing-aware analysis
+            if deal_class:
+                signal_payload["deal_class"] = deal_class
+                signal_payload["distress_probability"] = distress_prob
+                signal_payload["distress_reasoning"] = raw.get("distress_reasoning", "")
+            if filing_citation:
+                signal_payload["filing_citation"] = filing_citation
+
             analysis = await analyze_signal(
-                signal_data={
-                    "symbol": signal.symbol,
-                    "signal_type": str(signal.signal_type),
-                    "headline": signal.headline,
-                    "detail": signal.detail,
-                    "confidence": signal.confidence_score,
-                    "expected_impact": str(signal.expected_impact),
-                    "market_mood": market_mood,
-                    "nifty_change_pct": nifty_change,
-                    "fundamentals": fundamentals,
-                    "signal_date": signal.signal_date,
-                },
+                signal_data=signal_payload,
                 signal_type=str(signal.signal_type),
             )
         except Exception as exc:
@@ -274,6 +309,9 @@ async def step_enrich_with_context(ctx: AgentContext) -> AgentContext:
                 "signal": signal,
                 "analysis": analysis,
                 "fundamentals": fundamentals,
+                "filing_citation": filing_citation,
+                "deal_class": deal_class,
+                "distress_probability": distress_prob,
                 "market_context": {
                     "mood": market_mood,
                     "nifty_change": nifty_change,
@@ -398,6 +436,10 @@ async def step_personalise(ctx: AgentContext) -> AgentContext:
 async def step_generate_alerts(ctx: AgentContext) -> AgentContext:
     """
     For the top 3 personalised signals, generate a complete actionable alert.
+
+    Scenario 1 (Hackathon): Alerts for PROMOTER_DISTRESS bulk deals include
+    a filing_citation block and distress_probability so the frontend can
+    display 'Alert cites the filing — not just a vague warning.'
     """
 
     alerts = []
@@ -412,6 +454,11 @@ async def step_generate_alerts(ctx: AgentContext) -> AgentContext:
             or getattr(signal, "stock_price_at_signal", 0)
             or 0
         )
+
+        # Scenario 1 distress metadata
+        filing_citation = item.get("filing_citation")
+        deal_class = item.get("deal_class", "")
+        distress_prob = float(item.get("distress_probability", 0.0))
 
         direction = str(signal.expected_impact).upper()
         if direction == "BULLISH":
@@ -434,33 +481,36 @@ async def step_generate_alerts(ctx: AgentContext) -> AgentContext:
             action = "WATCH"
 
         conviction = "HIGH" if score >= 0.75 else "MEDIUM" if score >= 0.50 else "LOW"
-        alerts.append(
-            {
-                "rank": rank,
-                "symbol": signal.symbol,
-                "company_name": fundamentals.get("company_name", getattr(signal, "company_name", signal.symbol)),
-                "action": action,
-                "conviction": conviction,
-                "signal_type": str(signal.signal_type),
-                "headline": signal.headline,
-                "reasoning": analysis,
-                "portfolio_note": note,
-                "relevance": item.get("relevance"),
-                "trade_levels": {
-                    "entry_low": entry_low,
-                    "entry_high": entry_high,
-                    "target": target,
-                    "stop_loss": stop_loss,
-                    "horizon": horizon,
-                },
-                "scores": {
-                    "signal_confidence": round(float(signal.confidence_score), 2),
-                    "personalised_score": round(score, 2),
-                },
-                "data_sources": list(getattr(signal, "data_sources", [])),
-                "detected_on": getattr(signal, "signal_date", ""),
-            }
-        )
+        alert = {
+            "rank": rank,
+            "symbol": signal.symbol,
+            "company_name": fundamentals.get("company_name", getattr(signal, "company_name", signal.symbol)),
+            "action": action,
+            "conviction": conviction,
+            "signal_type": str(signal.signal_type),
+            "headline": signal.headline,
+            "reasoning": analysis,
+            "portfolio_note": note,
+            "relevance": item.get("relevance"),
+            "trade_levels": {
+                "entry_low": entry_low,
+                "entry_high": entry_high,
+                "target": target,
+                "stop_loss": stop_loss,
+                "horizon": horizon,
+            },
+            "scores": {
+                "signal_confidence": round(float(signal.confidence_score), 2),
+                "personalised_score": round(score, 2),
+            },
+            "data_sources": list(getattr(signal, "data_sources", [])),
+            "detected_on": getattr(signal, "signal_date", ""),
+            # ── Scenario 1: Filing citation & distress fields ─────────────────
+            "filing_citation": filing_citation,
+            "deal_class": deal_class or None,
+            "distress_probability": distress_prob if distress_prob > 0 else None,
+        }
+        alerts.append(alert)
 
     ctx.alerts = alerts
     ctx.metadata["step_4_summary"] = (

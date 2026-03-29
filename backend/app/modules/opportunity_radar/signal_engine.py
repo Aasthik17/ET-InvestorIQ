@@ -185,17 +185,23 @@ def detect_bulk_deal_signals(bulk_deals: List[dict]) -> List[Signal]:
     """
     Detect meaningful bulk/block deal signals.
 
+    Scenario 1 (Hackathon): Classifies each deal as PROMOTER_DISTRESS,
+    PROMOTER_ROUTINE_SALE, INSTITUTIONAL_EXIT, or INSTITUTIONAL_ACCUMULATION
+    using filing_matcher.classify_bulk_deal().
+
     Flags:
+    - Promoter selling with >3% discount → distress signal (BEARISH, high confidence)
     - Large deals by known institutional buyers (MFs, FIIs)
     - Repeated bulk buys in same stock within 5 days
-    - Bulk buy on a low-volume day (accumulation signal)
 
     Args:
         bulk_deals: List of bulk/block deal dicts.
 
     Returns:
-        List of Signal objects.
+        List of Signal objects with deal_class and distress_probability in raw_data.
     """
+    from app.services.filing_matcher import classify_bulk_deal
+
     signals = []
     deals_by_symbol: dict = {}
 
@@ -212,11 +218,72 @@ def detect_bulk_deal_signals(bulk_deals: List[dict]) -> List[Signal]:
             deals_by_symbol[symbol] = []
         deals_by_symbol[symbol].append(deal)
 
-        # Check if buyer is a known institutional investor
         client_lower = client.lower()
         is_institutional = any(inst in client_lower for inst in KNOWN_INSTITUTIONAL_BUYERS)
         is_buy = "buy" in deal_type.lower()
+        is_sell = not is_buy
 
+        # ── Scenario 1: Promoter Distress Classification ──────────────────────
+        classification = classify_bulk_deal(deal)
+        deal_class = classification["deal_class"]
+        distress_prob = classification["distress_probability"]
+        distress_reasoning = classification["reasoning"]
+        is_promoter_seller = classification["is_promoter_seller"]
+
+        if is_promoter_seller and is_sell:
+            if deal_class == "PROMOTER_DISTRESS":
+                confidence = 0.55 + distress_prob * 0.35
+                direction = SignalDirection.BEARISH
+                headline = (
+                    f"⚠ PROMOTER DISTRESS SELL: {client} sold ₹{value_cr:.1f} Cr "
+                    f"({distress_prob*100:.0f}% distress score) — {symbol}"
+                )
+                detail = (
+                    f"**Promoter Distress Signal** — {client} sold {qty:,} shares of {symbol} "
+                    f"at ₹{price:.2f} (₹{value_cr:.2f} Cr total) on {date_str}. "
+                    f"Distress indicators: {distress_reasoning}. "
+                    f"Distress probability: {distress_prob*100:.0f}%. "
+                    f"Cross-reference against recent management commentary and earnings trajectory before acting."
+                )
+                tags = ["bulk_deal", "promoter_distress", "bearish", symbol.lower(), "scenario1"]
+            else:
+                # Routine promoter sale
+                confidence = 0.45
+                direction = SignalDirection.NEUTRAL
+                headline = f"Promoter sale: {client} sold ₹{value_cr:.1f} Cr of {symbol} (routine)"
+                detail = (
+                    f"{client} sold {qty:,} shares of {symbol} at ₹{price:.2f} on {date_str}. "
+                    f"Classification: Routine promoter divestment (distress score: {distress_prob*100:.0f}%). "
+                    f"{distress_reasoning}."
+                )
+                tags = ["bulk_deal", "promoter_sale", symbol.lower()]
+
+            enriched_raw = {
+                **deal,
+                "deal_class": deal_class,
+                "distress_probability": distress_prob,
+                "distress_reasoning": distress_reasoning,
+                "seller_category": "Promoter",
+            }
+
+            signals.append(Signal(
+                id=_make_signal_id(symbol, "BULK_DEAL_PROMOTER", date_str, client),
+                symbol=symbol,
+                company_name=COMPANY_NAMES.get(symbol, symbol),
+                signal_type=SignalType.BULK_DEAL,
+                headline=headline,
+                detail=detail,
+                confidence_score=round(min(0.92, confidence), 2),
+                signal_date=date_str,
+                stock_price_at_signal=price,
+                expected_impact=direction,
+                data_sources=["NSE Bulk Deals", "BSE Block Deals"],
+                tags=tags,
+                raw_data=enriched_raw,
+            ))
+            continue
+
+        # ── Institutional accumulation signals ────────────────────────────────
         if value_cr >= 5 and is_institutional and is_buy:
             confidence = 0.60 + min(0.20, value_cr / 200)
             signals.append(Signal(
@@ -225,20 +292,19 @@ def detect_bulk_deal_signals(bulk_deals: List[dict]) -> List[Signal]:
                 company_name=COMPANY_NAMES.get(symbol, symbol),
                 signal_type=SignalType.BULK_DEAL,
                 headline=f"Institutional bulk buy: {client} acquired ₹{value_cr:.1f} Cr of {symbol}",
-                detail=(f"{client} executed a bulk {'buy' if is_buy else 'sell'} of "
-                        f"{qty:,} shares of {symbol} at ₹{price:.2f} "
+                detail=(f"{client} executed a bulk buy of {qty:,} shares of {symbol} at ₹{price:.2f} "
                         f"(total: ₹{value_cr:.2f} Cr) on {date_str}. "
                         f"Institutional accumulation at these levels suggests conviction in the stock's outlook."),
                 confidence_score=round(min(0.90, confidence), 2),
                 signal_date=date_str,
                 stock_price_at_signal=price,
-                expected_impact=SignalDirection.BULLISH if is_buy else SignalDirection.BEARISH,
+                expected_impact=SignalDirection.BULLISH,
                 data_sources=["NSE Bulk Deals", "BSE Block Deals"],
-                tags=["bulk_deal", "institutional", symbol.lower(), "buy" if is_buy else "sell"],
-                raw_data=deal,
+                tags=["bulk_deal", "institutional", symbol.lower(), "buy"],
+                raw_data={**deal, "deal_class": "INSTITUTIONAL_ACCUMULATION", "distress_probability": 0.0},
             ))
 
-    # Repeated buys: same symbol bought multiple times
+    # ── Repeat accumulation pattern ───────────────────────────────────────────
     for symbol, deals in deals_by_symbol.items():
         buy_deals = [d for d in deals if "buy" in d.get("deal_type", "").lower()]
         if len(buy_deals) >= 2:
@@ -250,16 +316,16 @@ def detect_bulk_deal_signals(bulk_deals: List[dict]) -> List[Signal]:
                 company_name=COMPANY_NAMES.get(symbol, symbol),
                 signal_type=SignalType.BULK_DEAL,
                 headline=f"Repeat accumulation: {len(buy_deals)} bulk buys in {symbol} — ₹{total_val:.1f} Cr total",
-                detail=(f"Multiple buyers have executed bulk purchase transactions in {symbol} "
-                        f"within the past 5 trading days. Total accumulated: ₹{total_val:.2f} Cr. "
-                        f"This repeated institutional interest suggests pre-event accumulation."),
+                detail=(f"Multiple buyers executed bulk purchases in {symbol} within the past 5 trading days. "
+                        f"Total accumulated: ₹{total_val:.2f} Cr. "
+                        f"Repeat institutional buying suggests pre-event accumulation."),
                 confidence_score=0.72,
                 signal_date=latest,
                 stock_price_at_signal=float(buy_deals[0].get("price", 0)),
                 expected_impact=SignalDirection.BULLISH,
                 data_sources=["NSE Bulk Deals"],
                 tags=["bulk_deal", "accumulation", symbol.lower(), "repeat"],
-                raw_data={"deals": buy_deals},
+                raw_data={"deals": buy_deals, "deal_class": "REPEAT_ACCUMULATION", "distress_probability": 0.0},
             ))
 
     return signals

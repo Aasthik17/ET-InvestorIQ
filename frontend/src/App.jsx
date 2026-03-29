@@ -9,6 +9,7 @@ const OpportunityRadar = lazy(() => import('./pages/OpportunityRadar'))
 const ChartIntelligence = lazy(() => import('./pages/ChartIntelligence'))
 const MarketChat      = lazy(() => import('./pages/MarketChat'))
 const VideoEngine     = lazy(() => import('./pages/VideoEngine'))
+const ScenarioPack    = lazy(() => import('./pages/ScenarioPack'))
 
 export default function App() {
   return (
@@ -29,8 +30,9 @@ export default function App() {
                 <Route path="/radar"  element={<OpportunityRadar />} />
                 <Route path="/charts" element={<ChartIntelligence />} />
                 <Route path="/chat"   element={<MarketChat />} />
-                <Route path="/video"  element={<VideoEngine />} />
-                <Route path="*"       element={<Navigate to="/" replace />} />
+                <Route path="/video"     element={<VideoEngine />} />
+                <Route path="/scenarios" element={<ScenarioPack />} />
+                <Route path="*"          element={<Navigate to="/" replace />} />
               </Routes>
             </Suspense>
           </main>

@@ -4,6 +4,7 @@
  */
 import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useLocation } from 'react-router-dom'
 import { Send, Plus, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { useChat } from '../hooks/useChat'
@@ -129,6 +130,15 @@ export default function MarketChat() {
   const [horizon, setHorizon] = useState('Medium')
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
+  const location = useLocation()
+
+  // Scenario 3: auto-populate chat from /scenarios page navigation
+  useEffect(() => {
+    if (location.state?.prefill) {
+      setInput(location.state.prefill)
+      inputRef.current?.focus()
+    }
+  }, [location.state])
 
   const { data: suggestions } = useQuery({
     queryKey: ['chat-suggestions'],

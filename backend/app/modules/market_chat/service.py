@@ -115,16 +115,52 @@ TOOL_DEFINITIONS = [
             "required": ["sector"]
         }
     },
+    {
+        "name": "prioritise_news_for_portfolio",
+        "description": (
+            "Scenario 3: Given two or more simultaneous news events (e.g., an RBI rate cut AND "
+            "a sector-specific regulatory change), rank each event by how financially material it is "
+            "to the user's specific portfolio. Returns estimated ₹ P&L impact for each holding and "
+            "a priority ranking of the events."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "news_events": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "headline": {"type": "string"},
+                            "description": {"type": "string"},
+                            "event_type": {
+                                "type": "string",
+                                "description": (
+                                    "Optional: one of RBI_RATE_CUT, RBI_RATE_HIKE, "
+                                    "SEBI_REGULATORY_TIGHTENING, PHARMA_FMCG_PRICE_CAP, "
+                                    "OIL_PRICE_SPIKE, RUPEE_DEPRECIATION, BUDGET_INFRA_PUSH, etc."
+                                )
+                            }
+                        },
+                        "required": ["headline"]
+                    },
+                    "description": "List of simultaneous news events to rank"
+                }
+            },
+            "required": ["news_events"]
+        }
+    },
 ]
 
 
-async def _execute_tool(tool_name: str, tool_input: dict) -> dict:
+async def _execute_tool(tool_name: str, tool_input: dict, portfolio: dict | None = None) -> dict:
     """
     Execute a tool call from Claude and return the result.
 
     Args:
         tool_name: Name of the tool to execute.
         tool_input: Input parameters for the tool.
+        portfolio: Optional portfolio dict for portfolio-aware tools.
 
     Returns:
         Tool result as a dict.
@@ -230,6 +266,42 @@ async def _execute_tool(tool_name: str, tool_input: dict) -> dict:
                 "source": "NSE Sector Data"
             }
 
+        elif tool_name == "prioritise_news_for_portfolio":
+            # ── Scenario 3: Portfolio-aware news prioritisation ────────────────
+            from app.services.news_impact_scorer import score_news_impact
+
+            news_events = tool_input.get("news_events", [])
+            holdings = tool_input.get("holdings", [])
+            if not holdings and portfolio:
+                holdings = portfolio.get("holdings", [])
+
+            ranked = score_news_impact(news_events=news_events, holdings=holdings)
+
+            if not ranked:
+                return {
+                    "error": "No news events or portfolio holdings provided",
+                    "ranked_events": [],
+                }
+
+            # Format for Claude to explain clearly
+            summary_lines = []
+            for r in ranked:
+                direction_symbol = "▲" if r["direction"] == "GAIN" else "▼" if r["direction"] == "LOSS" else "—"
+                impact_inr = r["total_pnl_impact_inr"]
+                summary_lines.append(
+                    f"#{r['priority_rank']} [{r['materiality']}] {r['headline']}: "
+                    f"Estimated P&L impact {direction_symbol}₹{abs(impact_inr):,.0f} "
+                    f"(affects sectors: {', '.join(r['affected_sectors']) or 'General market'})"
+                )
+
+            return {
+                "ranked_events": ranked,
+                "priority_summary": summary_lines,
+                "most_material_event": ranked[0]["headline"] if ranked else "N/A",
+                "most_material_pnl_inr": ranked[0]["total_pnl_impact_inr"] if ranked else 0,
+                "source": "ET InvestorIQ News Impact Scorer (Sector Beta Model)",
+            }
+
         else:
             return {"error": f"Unknown tool: {tool_name}"}
     except Exception as e:
@@ -256,11 +328,15 @@ async def chat(request: ChatRequest) -> ChatResponse:
     messages = [{"role": m.role, "content": m.content} for m in request.messages]
     portfolio_dict = request.portfolio.model_dump() if request.portfolio else None
 
+    # Wrap _execute_tool to inject portfolio context (needed for Scenario 3)
+    async def _tool_executor(tool_name: str, tool_input: dict) -> dict:
+        return await _execute_tool(tool_name, tool_input, portfolio=portfolio_dict)
+
     # Full tool-augmented chat
     result = await claude_service.chat_with_tools(
         messages=messages,
         tool_definitions=TOOL_DEFINITIONS,
-        tool_executor=_execute_tool,
+        tool_executor=_tool_executor,
         portfolio=portfolio_dict,
     )
 

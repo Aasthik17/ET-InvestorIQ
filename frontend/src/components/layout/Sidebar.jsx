@@ -4,7 +4,7 @@
  */
 import { NavLink } from 'react-router-dom'
 import {
-  LayoutDashboard, Radio, CandlestickChart, MessageSquare, Video,
+  LayoutDashboard, Radio, CandlestickChart, MessageSquare, Video, Target,
 } from 'lucide-react'
 import Logo from './Logo'
 
@@ -13,7 +13,8 @@ const NAV_ITEMS = [
   { to: '/radar',  icon: Radio,             label: 'Radar' },
   { to: '/charts', icon: CandlestickChart,  label: 'Charts' },
   { to: '/chat',   icon: MessageSquare,     label: 'Chat' },
-  { to: '/video',  icon: Video,             label: 'Video' },
+  { to: '/video',      icon: Video,            label: 'Video' },
+  { to: '/scenarios',  icon: Target,           label: 'Scenarios' },
 ]
 
 function MarketStatusWidget() {
